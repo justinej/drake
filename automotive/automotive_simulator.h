@@ -83,6 +83,12 @@ class AutomotiveSimulator {
       const std::string& name, const std::string& channel_name = std::string(),
       const SimpleCarState<T>& initial_state = SimpleCarState<T>());
 
+
+  // TODO: same as Prius simple car except intakes pre-programmed commands
+  int AddPriusSimpleProgrammedCar(
+      const std::string& name, const std::string& channel_name = std::string(),
+      const SimpleCarState<T>& initial_state = SimpleCarState<T>());
+
   /// Adds a SimpleCar to this simulation controlled by a MOBIL planner coupled
   /// with a PurePursuitController to perform lateral control of the vehicle,
   /// along with an IDM longitudinal controller.  The car is visualized as a
@@ -371,6 +377,7 @@ class AutomotiveSimulator {
 
   void InitializeTrajectoryCars();
   void InitializeSimpleCars();
+  void InitializeSimpleProgrammedCars(); // TODO Justine
   void InitializeMaliputRailcars();
 
   // For both building and simulation.
@@ -391,6 +398,10 @@ class AutomotiveSimulator {
   // Holds the desired initial states of each SimpleCar. It is used to
   // initialize the simulation's diagram's state.
   std::map<const SimpleCar<T>*, SimpleCarState<T>> simple_car_initial_states_;
+
+  // TODO Justine: holds desired initial states of each SimpleProgrammedCar, which
+  // is just a wrapper around the SimpleCar with different commands.
+  std::map<const SimpleCar<T>*, SimpleCarState<T>> simple_programmed_car_initial_states_;
 
   // Holds the desired initial states of each MaliputRailcar. It is used to
   // initialize the simulation's diagram's state.

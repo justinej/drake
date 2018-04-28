@@ -140,6 +140,59 @@ int AutomotiveSimulator<T>::AddPriusSimpleCar(
   return id;
 }
 
+// TODO: creates a simple car that differs only in that it can
+// receive pre-programmed commands
+template <typename T>
+int AutomotiveSimulator<T>::AddPriusSimpleProgrammedCar(
+    const std::string& name,
+    const std::string& channel_name,
+    const SimpleCarState<T>& initial_state) {
+  DRAKE_DEMAND(!has_started());
+  DRAKE_DEMAND(aggregator_ != nullptr);
+  CheckNameUniqueness(name);
+  const int id = allocate_vehicle_number();
+
+  auto simple_car = builder_->template AddSystem<SimpleCar<T>>();
+  simple_car->set_name(name);
+  vehicles_[id] = simple_car;
+  simple_programmed_car_initial_states_[simple_car].set_value(initial_state.get_value());
+
+  ConnectCarOutputsAndPriusVis(id, simple_car->pose_output(),
+      simple_car->velocity_output());
+
+  if (!channel_name.empty() && lcm_) {
+    static DrivingCommandTranslator driving_command_translator; // const
+
+    std::vector<uint8_t> message_bytes;
+    DrivingCommand<T> command;
+    command.set_acceleration(11.0);
+    driving_command_translator.Serialize(0.0 /* time */, command,
+                                           &message_bytes);
+
+    auto command_subscriber =
+        builder_->template AddSystem<systems::lcm::LcmSubscriberSystem>(
+            channel_name, driving_command_translator, lcm_.get());
+    // TODO (source from test/automotive_simulator_test.cc:78)
+    // const std::string driving_command_name =
+    //     systems::lcm::LcmSubscriberSystem::make_name(channel_name);
+    //auto& command_sub = dynamic_cast<systems::lcm::LcmSubscriberSystem&>(
+    //     simulator->GetBuilderSystemByName(driving_command_name));
+
+    //lcm::DrakeMockLcm* mock_lcm =
+    //  dynamic_cast<lcm::DrakeMockLcm*>(simulator->get_lcm());
+    //ASSERT_NE(nullptr, mock_lcm);
+    //mock_lcm->InduceSubscriberCallback(channel_name, &message_bytes[0],
+    //                                   message_bytes.size());
+
+    // TODO end sourced code
+
+    builder_->Connect(*command_subscriber, *simple_car);
+
+    AddPublisher(*simple_car, id);
+  }
+  return id;
+}
+
 template <typename T>
 int AutomotiveSimulator<T>::AddMobilControlledSimpleCar(
     const std::string& name, bool initial_with_s, ScanStrategy path_or_branches,
@@ -584,6 +637,7 @@ void AutomotiveSimulator<T>::BuildAndInitialize(
   if (initial_context == nullptr) {
     InitializeTrajectoryCars();
     InitializeSimpleCars();
+    InitializeSimpleProgrammedCars(); // TODO Justine
     InitializeMaliputRailcars();
   } else {
     simulator_->reset_context(std::move(initial_context));
@@ -630,6 +684,23 @@ void AutomotiveSimulator<T>::InitializeTrajectoryCars() {
 template <typename T>
 void AutomotiveSimulator<T>::InitializeSimpleCars() {
   for (const auto& pair : simple_car_initial_states_) {
+    const SimpleCar<T>* const car = pair.first;
+    const SimpleCarState<T>& initial_state = pair.second;
+
+    systems::VectorBase<T>& context_state =
+        diagram_->GetMutableSubsystemContext(*car,
+                                             &simulator_->get_mutable_context())
+        .get_mutable_continuous_state_vector();
+    SimpleCarState<T>* const state =
+        dynamic_cast<SimpleCarState<T>*>(&context_state);
+    DRAKE_ASSERT(state);
+    state->set_value(initial_state.get_value());
+  }
+}
+
+template <typename T>
+void AutomotiveSimulator<T>::InitializeSimpleProgrammedCars() {
+  for (const auto& pair : simple_programmed_car_initial_states_) {
     const SimpleCar<T>* const car = pair.first;
     const SimpleCarState<T>& initial_state = pair.second;
 

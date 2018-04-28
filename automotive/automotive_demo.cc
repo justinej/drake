@@ -19,6 +19,9 @@
 DEFINE_int32(num_simple_car, 0, "Number of SimpleCar vehicles. The cars are "
              "named \"0\", \"1\", \"2\", etc. If this option is provided, "
              "simple_car_names must not be provided.");
+DEFINE_int32(num_simple_programmed_car, 0, "Number of SimpleCar vehicles with pre-programmmed tracks. The cars are "
+             "named \"0\", \"1\", \"2\", etc. If this option is provided, "
+             "simple_car_names must not be provided.");
 DEFINE_string(simple_car_names, "",
               "A comma-separated list that specifies the number of SimpleCar "
               "models to instantiate, their names, and the names of the LCM "
@@ -286,6 +289,36 @@ void AddSimpleCars(AutomotiveSimulator<double>* simulator) {
   }
 }
 
+// Adds pre-programmed SimpleCar instances to the simulator. It uses FLAGS_num_simple_programmed_car
+// determine the number and names of SimpleCar
+// SimpleCar instances will start at X = 0 in the world frame, and will be
+// offset along the world frame's Y-axis by a constant distance.
+// TODO: for now it only runs additional simple cars
+void AddSimpleProgrammedCars(AutomotiveSimulator<double>* simulator) {
+  const double kSimpleCarYSpacing{3};
+  if (FLAGS_num_simple_programmed_car != 0) {
+    std::string simple_car_names;
+    for (int i = 0; i < FLAGS_num_simple_programmed_car; ++i) {
+      if (i != 0) {
+        simple_car_names += ",";
+      }
+      simple_car_names += std::to_string(i);
+    }
+    std::istringstream simple_programmed_car_name_stream(simple_car_names);
+    std::string name;
+    double y_offset{0};
+    while (getline(simple_programmed_car_name_stream, name, ',')) {
+      const std::string& channel_name = MakeChannelName(name);
+      drake::log()->info("Adding simple programmed car subscribed to {}.", channel_name);
+      SimpleCarState<double> state;
+      state.set_y(y_offset);
+      state.set_velocity(11.0); // TODO Justine : edited the initial velocity
+      simulator->AddPriusSimpleProgrammedCar(name, channel_name, state);
+       y_offset += kSimpleCarYSpacing;
+     }
+  }
+}
+
 // Initializes the provided `simulator` with user-specified numbers of
 // `SimpleCar` vehicles and `TrajectoryCar` vehicles. If parameter
 // `road_network_type` equals `RoadNetworkType::dragway`, the provided
@@ -294,6 +327,7 @@ void AddVehicles(RoadNetworkType road_network_type,
     const maliput::api::RoadGeometry* road_geometry,
     AutomotiveSimulator<double>* simulator) {
   AddSimpleCars(simulator);
+  AddSimpleProgrammedCars(simulator);
 
   if (road_network_type == RoadNetworkType::dragway) {
     DRAKE_DEMAND(road_geometry != nullptr);

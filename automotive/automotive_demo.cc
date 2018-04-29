@@ -26,13 +26,6 @@ DEFINE_string(simple_car_names, "",
               "would spawn 3 cars subscribed to DRIVING_COMMAND_Russ, "
               "DRIVING_COMMAND_Jeremy, and DRIVING_COMMAND_Liang). If this "
               "option is provided, num_simple_car must not be provided.");
-DEFINE_string(simple_programmed_car_names, "",
-              "A comma-separated list that specifies the number of SimpleProgrammedCar "
-              "models to instantiate, their names, and the names of the LCM "
-              "channels to which they subscribe (e.g., 'Russ,Jeremy,Liang' "
-              "would spawn 3 cars subscribed to PROGRAMMED_COMMAND_Russ, "
-              "PROGRAMMED_COMMAND_Jeremy, and PROGRAMMED_COMMAND_Liang). "
-              "This is the only way to add simpleProgrammedCars.");
 DEFINE_int32(num_mobil_car, 0,
              "Number of MOBIL-controlled SimpleCar vehicles. This option is "
              "currently only applied when the road network is a dragway. "
@@ -129,12 +122,8 @@ enum class RoadNetworkType {
   multilane_onramp = 3,
 };
 
-std::string MakeChannelName(const std::string& name, const std::string& type = "simple") {
-  std::string default_prefix;
-  if (type == "simple")
-      default_prefix = "DRIVING_COMMAND";
-  else if (type == "programmed")
-      default_prefix = "PROGRAMMED_COMMAND";
+std::string MakeChannelName(const std::string& name) {
+  std::string default_prefix{"DRIVING_COMMAND"};
   if (name.empty()) {
     return default_prefix;
   }
@@ -297,32 +286,6 @@ void AddSimpleCars(AutomotiveSimulator<double>* simulator) {
   }
 }
 
-// Adds pre-programmed SimpleProgrammedCar instances to the simulator.
-// Must use FLAGS_simple_programmed_car_names to determine the number
-// and names of SimpleProgrammedCar instances to add.
-// SimpleProgrammedCar instances will start at X = 0 in the world frame, and will be
-// offset along the world frame's Y-axis by a constant distance.
-// They are simpleCars programmed to follow instructions at drake/automotive/[name].txt
-
-void AddSimpleProgrammedCars(AutomotiveSimulator<double>* simulator) {
-  const double kSimpleCarYSpacing{3};
-
-  if (!FLAGS_simple_programmed_car_names.empty()) {
-    std::string simple_programmed_car_names = FLAGS_simple_programmed_car_names;
-    std::istringstream simple_programmed_car_name_stream(simple_programmed_car_names);
-    std::string name;
-    double y_offset{0};
-    while (getline(simple_programmed_car_name_stream, name, ',')) {
-      const std::string& channel_name = MakeChannelName(name, "programmed");
-      drake::log()->info("Adding simple programmed car subscribed to {}.", channel_name);
-      SimpleCarState<double> state;
-      state.set_y(y_offset);
-      simulator->AddPriusSimpleProgrammedCar(name, channel_name, state);
-       y_offset += kSimpleCarYSpacing;
-     }
-  }
-}
-
 // Initializes the provided `simulator` with user-specified numbers of
 // `SimpleCar` vehicles and `TrajectoryCar` vehicles. If parameter
 // `road_network_type` equals `RoadNetworkType::dragway`, the provided
@@ -331,7 +294,6 @@ void AddVehicles(RoadNetworkType road_network_type,
     const maliput::api::RoadGeometry* road_geometry,
     AutomotiveSimulator<double>* simulator) {
   AddSimpleCars(simulator);
-  AddSimpleProgrammedCars(simulator);
 
   if (road_network_type == RoadNetworkType::dragway) {
     DRAKE_DEMAND(road_geometry != nullptr);

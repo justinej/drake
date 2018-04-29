@@ -217,6 +217,14 @@ def main():
                         help="a comma separated list of vehicle names for " +
                              "the vehicles for which a driving command GUI " +
                              "should be launched")
+    parser.add_argument("--programmed_command_names", default="",
+                        help="a comma separated list of vehicle names for " +
+                             "the vehicles for which a commands file should be " +
+                             "used.")
+
+    # TODO Justine : ensure that no car is in both driving_command_gui_names
+    # and programmed_command_names
+
     args, tail = parser.parse_known_args()
 
     if '--help' in tail:
@@ -248,12 +256,16 @@ def main():
         if args.driving_command_gui_names != "":
             name_list = args.driving_command_gui_names.split(',')
             for name in name_list:
-                if True: # TODO Justine : replace with criteria for pre-programmed instructions
-                    the_launcher.launch([steering_command_driver_path,
-                                         "--lcm_tag=PROGRAMMED_COMMAND_" + name,
-                                         "--input_method=commands"])
-                else: the_launcher.launch([steering_command_driver_path,
+                the_launcher.launch([steering_command_driver_path,
                                      "--lcm_tag=DRIVING_COMMAND_" + name])
+
+        if args.programmed_command_names != "":
+            name_list = args.programmed_command_names.split(',')
+            for name in name_list:
+                the_launcher.launch([steering_command_driver_path,
+                                     "--lcm_tag=DRIVING_COMMAND_" + name,
+                                     "--input_method=commands"])
+            
 
         the_launcher.wait(args.duration)
 

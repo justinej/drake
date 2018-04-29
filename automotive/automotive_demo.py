@@ -248,7 +248,11 @@ def main():
         if args.driving_command_gui_names != "":
             name_list = args.driving_command_gui_names.split(',')
             for name in name_list:
-                the_launcher.launch([steering_command_driver_path,
+                if True: # TODO Justine : replace with criteria for pre-programmed instructions
+                    the_launcher.launch([steering_command_driver_path,
+                                         "--lcm_tag=DRIVING_COMMAND_" + name,
+                                         "--input_method=commands"])
+                else: the_launcher.launch([steering_command_driver_path,
                                      "--lcm_tag=DRIVING_COMMAND_" + name])
 
         the_launcher.wait(args.duration)

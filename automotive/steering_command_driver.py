@@ -8,6 +8,7 @@ import collections
 import copy
 import math
 import sys
+import time
 
 try:
     import pygame
@@ -62,7 +63,6 @@ def _limit_brake(requested_value):
         return 0
     else:
         return MAX_BRAKE
-
 
 class KeyboardEventProcessor:
     def __init__(self):
@@ -216,6 +216,40 @@ class SteeringCommandPublisher:
                 self.printLCMValues()
 
 
+class CommandsPublisher:
+    def __init__(self, lcm_tag):
+        self.last_value = SteeringThrottleBrake(0, 0, 0)
+        self.lc = lcm.LCM()
+        self.lcm_tag = lcm_tag
+        self.throttle_gradient = 0
+        self.brake_gradient = 0
+
+    def speed_up(self, last_msg):
+        new_msg = copy.copy(last_msg)
+        self.throttle_gradient = 1
+        new_msg = new_msg._replace(
+            throttle=_limit_throttle(
+                new_msg.throttle + self.throttle_gradient * THROTTLE_SCALE))
+        return new_msg
+
+    def slow_down(self, last_msg):
+        new_msg = copy.copy(last_msg)
+        self.brake_gradient = 1
+        new_msg = new_msg._replace(
+            brake=_limit_brake(
+                new_msg.brake + self.brake_gradient * BRAKE_SCALE))
+        return new_msg
+
+    def start(self):
+        # very basic instructions: speed up every second
+        while True:
+            time.sleep(1)
+            self.last_value = self.speed_up(self.last_value)
+            msg = lcm_msg()
+            msg.acceleration = (self.last_value.throttle -
+                                self.last_value.brake)
+            self.lc.publish(self.lcm_tag, msg.encode())
+
 def publish_driving_command(lcm_tag, throttle, steering_angle):
     lc = lcm.LCM()
     last_msg = lcm_msg()
@@ -236,7 +270,7 @@ def main():
         help='whether to run interactively with pygame input,'
         ' or just send a single command')
     parser.add_argument(
-        '--input_method', choices=['joystick', 'keyboard'], default='keyboard',
+        '--input_method', choices=['joystick', 'keyboard', 'commands'], default='keyboard',
         help='the interactive input method to use for publishing LCM commands')
     parser.add_argument(
         '--joy_name', default='Driving Force GT',
@@ -258,8 +292,11 @@ def main():
         print >>sys.stderr, 'error: missing pygame; see README.md for help.'
         return 1
 
-    publisher = SteeringCommandPublisher(
-        args.input_method, args.lcm_tag, args.joy_name)
+    if args.input_method == "commands":
+        publisher = CommandsPublisher(args.lcm_tag)
+    else:
+        publisher = SteeringCommandPublisher(
+                        args.input_method, args.lcm_tag, args.joy_name)
     publisher.start()
 
     return 0

@@ -223,7 +223,6 @@ void AddSimpleProgrammedCars(AutomotiveSimulator<double>* simulator) {
       drake::log()->info("Adding simple programmed car subscribed to {}.", channel_name);
       SimpleCarState<double> state;
       state.set_y(y_offset);
-      state.set_velocity(11.0); // TODO Justine : edited the initial velocity
       simulator->AddPriusSimpleProgrammedCar(name, channel_name, state);
        y_offset += kSimpleCarYSpacing;
      }

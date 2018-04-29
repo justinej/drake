@@ -250,7 +250,7 @@ def main():
             for name in name_list:
                 if True: # TODO Justine : replace with criteria for pre-programmed instructions
                     the_launcher.launch([steering_command_driver_path,
-                                         "--lcm_tag=DRIVING_COMMAND_" + name,
+                                         "--lcm_tag=PROGRAMMED_COMMAND_" + name,
                                          "--input_method=commands"])
                 else: the_launcher.launch([steering_command_driver_path,
                                      "--lcm_tag=DRIVING_COMMAND_" + name])

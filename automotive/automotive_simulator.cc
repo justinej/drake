@@ -161,30 +161,10 @@ int AutomotiveSimulator<T>::AddPriusSimpleProgrammedCar(
       simple_car->velocity_output());
 
   if (!channel_name.empty() && lcm_) {
-    static DrivingCommandTranslator driving_command_translator; // const
-
-    std::vector<uint8_t> message_bytes;
-    DrivingCommand<T> command;
-    command.set_acceleration(11.0);
-    driving_command_translator.Serialize(0.0 /* time */, command,
-                                           &message_bytes);
-
+    const static DrivingCommandTranslator driving_command_translator; // const
     auto command_subscriber =
         builder_->template AddSystem<systems::lcm::LcmSubscriberSystem>(
             channel_name, driving_command_translator, lcm_.get());
-    // TODO (source from test/automotive_simulator_test.cc:78)
-    // const std::string driving_command_name =
-    //     systems::lcm::LcmSubscriberSystem::make_name(channel_name);
-    //auto& command_sub = dynamic_cast<systems::lcm::LcmSubscriberSystem&>(
-    //     simulator->GetBuilderSystemByName(driving_command_name));
-
-    //lcm::DrakeMockLcm* mock_lcm =
-    //  dynamic_cast<lcm::DrakeMockLcm*>(simulator->get_lcm());
-    //ASSERT_NE(nullptr, mock_lcm);
-    //mock_lcm->InduceSubscriberCallback(channel_name, &message_bytes[0],
-    //                                   message_bytes.size());
-
-    // TODO end sourced code
 
     builder_->Connect(*command_subscriber, *simple_car);
 

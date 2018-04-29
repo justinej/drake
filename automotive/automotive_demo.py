@@ -220,7 +220,8 @@ def main():
     parser.add_argument("--programmed_command_names", default="",
                         help="a comma separated list of vehicle names for " +
                              "the vehicles for which a commands file should be " +
-                             "used.")
+                             "used. Commands should be put in files located at: " +
+                             "drake/automotive/DRIVING_COMMAND_[name].txt")
 
     # TODO Justine : ensure that no car is in both driving_command_gui_names
     # and programmed_command_names
@@ -253,18 +254,25 @@ def main():
 
         the_launcher.launch([demo_path] + tail)
 
+        gui_names_list = []
+        programmed_names_list = []
         if args.driving_command_gui_names != "":
-            name_list = args.driving_command_gui_names.split(',')
-            for name in name_list:
-                the_launcher.launch([steering_command_driver_path,
-                                     "--lcm_tag=DRIVING_COMMAND_" + name])
-
+            gui_names_list = args.driving_command_gui_names.split(',')
         if args.programmed_command_names != "":
-            name_list = args.programmed_command_names.split(',')
-            for name in name_list:
-                the_launcher.launch([steering_command_driver_path,
-                                     "--lcm_tag=DRIVING_COMMAND_" + name,
-                                     "--input_method=commands"])
+            programmed_names_list = args.programmed_command_names.split(',')
+
+        for car in gui_names_list:
+            if car in programmed_names_list:
+                raise RuntimeError("Car can't be both in driving_command_gui_names " +
+                    "and programmed_command_names.")
+
+        for name in gui_names_list:
+            the_launcher.launch([steering_command_driver_path,
+                                     "--lcm_tag=DRIVING_COMMAND_" + name])
+        for name in programmed_names_list:
+            the_launcher.launch([steering_command_driver_path,
+                                 "--lcm_tag=DRIVING_COMMAND_" + name,
+                                 "--input_method=commands"])
             
 
         the_launcher.wait(args.duration)

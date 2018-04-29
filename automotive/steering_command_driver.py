@@ -224,6 +224,18 @@ class CommandsPublisher:
         self.throttle_gradient = 0
         self.brake_gradient = 0
 
+        self.file_path = "/Users/justinej/Documents/drake/automotive/" + self.lcm_tag + ".txt"
+        self.commands = self.read_file(self.file_path)
+        self.time_interval = 0.5 # seconds between steps
+
+    def read_file(self, path_to_file):
+        f = open(path_to_file, "r")
+        commands = []
+        for line in f:
+            commands.append(line[:-1])
+        f.close()
+        return commands
+
     def speed_up(self, last_msg):
         new_msg = copy.copy(last_msg)
         self.throttle_gradient = 1
@@ -241,10 +253,15 @@ class CommandsPublisher:
         return new_msg
 
     def start(self):
-        # very basic instructions: speed up every second
+        i = 0 # Line in file to read
         while True:
-            time.sleep(1)
-            self.last_value = self.speed_up(self.last_value)
+            time.sleep(self.time_interval)
+            if self.commands[i] == "up":
+                self.last_value = self.speed_up(self.last_value)
+            elif self.commands[i] == "down":
+                self.last_value = self.slow_down(self.last_value)
+            if i < len(self.commands) - 1:
+                i += 1
             msg = lcm_msg()
             msg.acceleration = (self.last_value.throttle -
                                 self.last_value.brake)

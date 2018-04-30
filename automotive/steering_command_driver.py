@@ -7,6 +7,7 @@ import argparse
 import collections
 import copy
 import math
+import os
 import sys
 import time
 
@@ -221,57 +222,118 @@ class SteeringCommandPublisher:
                 self.lc.publish(self.lcm_tag, msg.encode())
                 self.printLCMValues()
 
-
+# Looks for a file in file_path/DRIVING_COMMAND_[car_name].txt
+# and reads the commands from that file. The file must be
+# composed of lines of the form "command num"
+# command should be a string in [up, down, left, right, cruise]
+# num must be a positive float or int, and must be monotonically
+# increasing because they represent time-stamps.
+# We follow commands one at a time until we pass its num second-mark
 class CommandsPublisher:
     def __init__(self, lcm_tag):
         self.last_value = SteeringThrottleBrake(0, 0, 0)
         self.lc = lcm.LCM()
         self.lcm_tag = lcm_tag
-        self.throttle_gradient = 0
-        self.brake_gradient = 0
-
+        # TODO : change path with your own path to drake
         self.file_path = "/Users/justinej/Documents/drake/automotive/" + self.lcm_tag + ".txt"
         self.commands = self.read_file(self.file_path)
-        self.time_interval = 0.5 # seconds between steps
+        self.time_interval = 0.01 # seconds between steps
 
     def read_file(self, path_to_file):
         f = open(path_to_file, "r")
         commands = []
+        previous_time_stamp = 0
         for line in f:
-            commands.append(line[:-1])
+            # Ignore lines starting with hash-tag
+            if line.startswith("#"):
+                continue
+            command = line[:-1].split(" ")
+            command[1] = float(command[1])
+
+            assert len(command) == 2
+            assert command[0] in ['up', 'down', 'left', 'right', 'cruise']
+            assert command[1] > previous_time_stamp
+            previous_time_stamp = command[1]
+
+            commands.append(command)
         f.close()
         return commands
 
     def speed_up(self, last_msg):
         new_msg = copy.copy(last_msg)
-        self.throttle_gradient = 1
+        throttle_gradient = 1
         new_msg = new_msg._replace(
             throttle=_limit_throttle(
-                new_msg.throttle + self.throttle_gradient * THROTTLE_SCALE))
+                new_msg.throttle + throttle_gradient * THROTTLE_SCALE))
         return new_msg
 
     def slow_down(self, last_msg):
         new_msg = copy.copy(last_msg)
-        self.brake_gradient = 1
+        brake_gradient = 1
         new_msg = new_msg._replace(
             brake=_limit_brake(
-                new_msg.brake + self.brake_gradient * BRAKE_SCALE))
+                new_msg.brake + brake_gradient * BRAKE_SCALE))
         return new_msg
 
+    def turn_left(self, last_msg):
+        new_msg = copy.copy(last_msg)
+        new_msg = new_msg._replace(steering_angle=_limit_steering(
+            last_msg.steering_angle + (
+                STEERING_BUTTON_STEP_ANGLE * TURN_LEFT_SIGN)))
+        return new_msg
+
+    def turn_right(self, last_msg):
+        new_msg = copy.copy(last_msg)
+        new_msg = new_msg._replace(steering_angle=_limit_steering(
+            last_msg.steering_angle + (
+                STEERING_BUTTON_STEP_ANGLE * TURN_RIGHT_SIGN)))
+        return new_msg
+
+    def cruise(self):
+        return self.reset()
+
+    # Reset command sent after switching buttons
+    def reset(self):
+        return SteeringThrottleBrake(0, 0, 0)
+
+    # Slow down when you've reached the end of the commands
+    def end(self, last_msg):
+        return self.slow_down(last_msg)
+
     def start(self):
-        i = 0 # Line in file to read
+        start_time = time.time()
+        i = 0 # line we're reading in commands file
         while True:
-            time.sleep(self.time_interval)
-            if self.commands[i] == "up":
-                self.last_value = self.speed_up(self.last_value)
-            elif self.commands[i] == "down":
-                self.last_value = self.slow_down(self.last_value)
-            if i < len(self.commands) - 1:
+            current_time = time.time() - start_time
+            while (i < len(self.commands) and
+                self.commands[i][1] < current_time):
+                # "key is up" so we reset throttle and steering
+                self.last_value = self.reset()
                 i += 1
+
+            if i == len(self.commands):
+                command = ["default"]
+            else: command = self.commands[i]
+
+            if command[0] == "up":
+                self.last_value = self.speed_up(self.last_value)
+            elif command[0] == "down":
+                self.last_value = self.slow_down(self.last_value)
+            elif command[0] == "left":
+                self.last_value = self.turn_left(self.last_value)
+            elif command[0] == "right":
+                self.last_value = self.turn_right(self.last_value)
+            elif command[0] == "cruise":
+                self.last_value = self.cruise()
+            else:
+                self.last_value = self.end(self.last_value)
+
             msg = lcm_msg()
             msg.acceleration = (self.last_value.throttle -
                                 self.last_value.brake)
+            msg.steering_angle = self.last_value.steering_angle
             self.lc.publish(self.lcm_tag, msg.encode())
+            time.sleep(self.time_interval) # Repeat every self.time_interval seconds
 
 def publish_driving_command(lcm_tag, throttle, steering_angle):
     lc = lcm.LCM()

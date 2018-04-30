@@ -1,0 +1,3 @@
+# Car accelerates forward then stops
+up 1
+down 3

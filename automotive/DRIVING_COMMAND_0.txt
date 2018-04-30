@@ -1,8 +1,5 @@
-up
-up
-up
-down
-down
-down
-down
-down
+# Makes a left turn then stops
+up 1
+left 3.7
+cruise 5
+down 7

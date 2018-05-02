@@ -86,6 +86,12 @@ DEFINE_bool(onramp_swap_start, false, "Whether to swap the starting lanes of "
 DEFINE_bool(with_stalled_cars, false, "Places a stalled vehicle at the end of "
             "each lane of a dragway. This option is only enabled when the "
             "road is a dragway.");
+DEFINE_string(stalled_cars_pos, "", "Places as many of the stalled cars at "
+              "specified positions as there are positions given. The rest "
+              "are placed at the end of the dragway. Positions are floats in "
+              "[0, 1] that represent the fraction of the dragway that is "
+              "behind the vehicle (i.e. 1 represents all the way at the end "
+              "of the dragway).");
 
 namespace drake {
 
@@ -258,11 +264,26 @@ void AddVehicles(RoadNetworkType road_network_type,
         initial_s_offset, dragway_road_geometry, simulator);
     if (FLAGS_with_stalled_cars) {
       DRAKE_DEMAND(road_geometry != nullptr);
+      float positions[FLAGS_num_dragway_lanes];
+      int stalled_cars_i = 0;
+      if (!FLAGS_stalled_cars_pos.empty()) {
+        std::istringstream stalled_cars_pos_stream(FLAGS_stalled_cars_pos);
+        std::string pos_tmp;
+        while (stalled_cars_i < FLAGS_num_dragway_lanes &&
+               getline(stalled_cars_pos_stream, pos_tmp, ',')) {
+            float pos = std::stof(pos_tmp);
+            positions[stalled_cars_i++] = pos;
+        }
+      } while (stalled_cars_i < FLAGS_num_dragway_lanes)
+            positions[stalled_cars_i++] = 1;
+
       for (int i = 0; i < FLAGS_num_dragway_lanes; ++i) {
         const Lane* lane = road_geometry->junction(0)->segment(0)->lane(i);
         DRAKE_DEMAND(lane != nullptr);
         const maliput::api::GeoPosition position = lane->ToGeoPosition(
-            {lane->length() /* s */, 0 /* r */, 0 /* h */});
+            {positions[i] * (lane->length()) /* s */,
+             0 /* r */,
+             0 /* h */});
         SimpleCarState<double> state;
         state.set_x(position.x());
         state.set_y(position.y());

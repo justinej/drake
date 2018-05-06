@@ -38,14 +38,12 @@ Interlock<T>::Interlock(const RoadGeometry& road,
       ego_velocity_index_(
           this->DeclareVectorInputPort(FrameVelocity<T>()).get_index()),
       traffic_index_(this->DeclareAbstractInputPort().get_index()),
-      // num_poses_index_(this->DeclareAbstractInputPort().get_index()),
-      pose_output_index_(
-          this->DeclareVectorOutputPort(&Interlock::CalcPose).get_index()),
-      velocity_output_index_(
-          this->DeclareVectorOutputPort(&Interlock::CalcVelocity).get_index())
-      // traffic_output_index_(
-      //     this->DeclareAbstractOutputPort(&Interlock::MakePoseBundle,
-      //                                     &Interlock::CalcTraffic).get_index())
+      acceleration_index(this->DeclareVectorOutputPort(
+        systems::BasicVector<T>(1),
+        &Interlock::CalcAcceleration).get_index()),
+      bh_bit_index(this->DeclareVectorOutputPort(
+        systems::BasicVector<T>(1),
+        &Interlock::CalcBHBit).get_index())
 
       { /* intializing */ }
 
@@ -70,25 +68,15 @@ const systems::InputPortDescriptor<T>& Interlock<T>::traffic_input() const {
   return systems::System<T>::get_input_port(traffic_index_);
 }
 
-// template <typename T>
-// const systems::InputPortDescriptor<T>& Interlock<T>::num_poses_input() const {
-//   return systems::System<T>::get_input_port(num_poses_index_);
-// }
-
 template <typename T>
-const systems::OutputPort<T>& Interlock<T>::ego_pose_output() const {
-  return systems::System<T>::get_output_port(pose_output_index_);
+const systems::OutputPort<T>& Interlock<T>::acceleration_output() const {
+  return systems::System<T>::get_output_port(acceleration_output_index_);
 }
 
 template <typename T>
-const systems::OutputPort<T>& Interlock<T>::ego_velocity_output() const {
-  return systems::System<T>::get_output_port(velocity_output_index_);
+const systems::OutputPort<T>& Interlock<T>::bh_bit_output() const {
+  return systems::System<T>::get_output_port(bh_bit_index_);
 }
-
-// template <typename T>
-// const systems::OutputPort<T>& Interlock<T>::traffic_output() const {
-//   return systems::System<T>::get_output_port(traffic_output_index_);
-// }
 
 template <typename T>
 void Interlock<T>::CalcPose(
@@ -109,32 +97,22 @@ void Interlock<T>::CalcVelocity(
   velocity->set_velocity(velocity_input->get_velocity());
 }
 
-//template <typename T>
-//PoseBundle<T> Interlock<T>::MakePoseBundle() const {
-//    const int* const num_poses_input =
-//      this->template EvalInputValue<int>(context, num_poses_index_);
-//  return PoseBundle<T>(*num_poses_input);
-//}
-//
-//template <typename T>
-//void Interlock<T>::CalcTraffic(
-//    const systems::Context<T>& context,
-//    PoseBundle<T>* output) const {
-//  const PoseBundle<T>* const traffic_input =
-//      this->template EvalInputValue<PoseBundle<T>>(context, traffic_index_);
-//  // *output = *traffic_input;
-//  // we copy traffic because pose_bundle doesn't naturally have a copy-constructor
-//  const int num_poses = traffic_input->get_num_poses();
-//  for (int i = 0; i < num_poses; i++) {
-//    // copy i-th pose from traffic_input to traffic
-//    output->set_model_instance_id(i, traffic_input->get_model_instance_id(i));
-//    output->set_name(i, traffic_input->get_name(i));
-//    output->set_velocity(i, traffic_input->get_velocity(i));
-//    output->set_pose(i, traffic_input->get_pose(i));
-//  }
-//}
+template <typename T>
+void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
+                      systems::BasicVector<T>* accel_output) const {
+    (*accel_output)[0] = 5.0; // TODO Justine
+}
 
+template <typename T>
+void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
+                      systems::BasicVector<T>* bh_bit_output) const {
+    (*bh_bit_output)[0] = 0.0; // TODO Justine
 
+}
+
+template <typename T>
+void Interlock<T>::CalcAcceleration(
+    const
 
 }  // namespace automotive
 }  // namespace drake

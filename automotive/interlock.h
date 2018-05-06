@@ -81,8 +81,8 @@ class Interlock : public systems::LeafSystem<T> {
   const systems::InputPortDescriptor<T>& ego_pose_input() const;
   const systems::InputPortDescriptor<T>& ego_velocity_input() const;
   const systems::InputPortDescriptor<T>& traffic_input() const;
-  const systems::OutputPort<T>& ego_pose_output() const;
-  const systems::OutputPort<T>& ego_velocity_output() const;
+  const systems::OutputPort<T>& acceleration_output() const;
+  const systems::OutputPort<T>& bh_bit_output() const;
   /// @}
 
  protected:
@@ -90,8 +90,8 @@ class Interlock : public systems::LeafSystem<T> {
   int ego_pose_index() const { return ego_pose_index_; }
   int ego_velocity_index() const { return ego_velocity_index_; }
   int traffic_index() const { return traffic_index_; }
-  int pose_output_index() const { return pose_output_index_; }
-  int velocity_output_index() const { return velocity_output_index_; }
+  int acceleration_index() const { return acceleration_index_; }
+  int bh_bit_index() const { return bh_bit_index_; }
 
  private:
 
@@ -108,19 +108,14 @@ class Interlock : public systems::LeafSystem<T> {
   const int ego_pose_index_{};
   const int ego_velocity_index_{};
   const int traffic_index_{};
-  const int pose_output_index_{};
-  const int velocity_output_index_{};
+  const int acceleration_index_{};
+  const int bh_bit_index_{};
   // const int traffic_output_index_{};
 
-  systems::rendering::PoseBundle<T> MakePoseBundle(
-    const systems::Context<T>& context) const;
-  
-  void CalcPose(const systems::Context<T>& context,
-                systems::rendering::PoseVector<T>* pose_output) const;
-  void CalcVelocity(const systems::Context<T>& context,
-                    systems::rendering::FrameVelocity<T>* velocity_output) const;
-//   void CalcTraffic(const systems::Context<T>& context,
-//                    systems::rendering::PoseBundle<T>* traffic_output) const;
+  void CalcAcceleration(const systems::Context<T>& context,
+                        systems::BasicVector<T>* accel_output) const;
+  void CalcBhBit(const systems::Context<T>& context,
+                        systems::BasicVector<T>* bh_bit_output) const;
 
 };
 

@@ -26,12 +26,14 @@ const T IdmPlanner<T>::Evaluate(const IdmPlannerParameters<T>& params,
   const T& v_ref = params.v_ref();
   const T& a = params.a();
   const T& b = params.b();
+  const T& c = params.c();
   const T& s_0 = params.s_0();
   const T& time_headway = params.time_headway();
   const T& delta = params.delta();
 
   DRAKE_DEMAND(a > 0.);
   DRAKE_DEMAND(b > 0.);
+  DRAKE_DEMAND(c > 0.);
   DRAKE_DEMAND(target_distance > 0.);
 
   // Compute the interaction acceleration terms.
@@ -46,7 +48,8 @@ const T IdmPlanner<T>::Evaluate(const IdmPlannerParameters<T>& params,
   const T accel_free_road = pow(max(T(0.), ego_velocity) / v_ref, delta);
 
   // Compute the resultant acceleration (IDM equation).
-  return a * (1. - accel_free_road - accel_interaction);
+  // bounded from below by c, the (positive) maximum de-aceleration
+  return max(a * (1. - accel_free_road - accel_interaction), -c);
 }
 
 }  // namespace automotive

@@ -23,6 +23,15 @@ element {
      default_value: "3.0"
      min_value: "0.0"
 }
+# TODO Justine - adding maximum de-acceleration
+# (to try to break IDM)
+element {
+     name: "c"
+     doc: "max de-acceleration"
+     doc_units: "m/s^2"
+     default_value: "100.0"
+     min_value: "0.0"
+}
 element {
      name: "s_0"
      doc: "minimum desired net distance"
@@ -63,6 +72,6 @@ element {
      name: "scan_ahead_distance"
      doc: "distance to scan ahead on road for a leading vehicle"
      doc_units: "m"
-     default_value: "100.0"
+     default_value: "10.0" # TODO Justine: default is 100.0
      min_value: "0.0"
 }

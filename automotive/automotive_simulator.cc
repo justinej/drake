@@ -8,6 +8,7 @@
 #include "drake/automotive/gen/maliput_railcar_state_translator.h"
 #include "drake/automotive/gen/simple_car_state_translator.h"
 #include "drake/automotive/idm_controller.h"
+#include "drake/automotive/interlock.h"
 #include "drake/automotive/maliput/api/junction.h"
 #include "drake/automotive/maliput/api/lane.h"
 #include "drake/automotive/maliput/api/segment.h"
@@ -370,12 +371,29 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
                                                      road_position_strategy,
                                                      period_sec);
   controller->set_name(name + "_IdmController");
+  auto interlock =
+      builder_->template AddSystem<Interlock<T>>(*road_, path_or_branches,
+                                                     road_position_strategy,
+                                                     period_sec);
+  interlock->set_name(name + "_Interlock");
+  
 
-  builder_->Connect(railcar->pose_output(), controller->ego_pose_input());
+  // TODO Justine
+  builder_->Connect(railcar->pose_output(),
+                    interlock->ego_pose_input());
+  builder_->Connect(interlock->ego_pose_output(),
+                    controller->ego_pose_input());
+
   builder_->Connect(railcar->velocity_output(),
+                    interlock->ego_velocity_input());
+  builder_->Connect(interlock->ego_velocity_output(),
                     controller->ego_velocity_input());
+
+  builder_->Connect(aggregator_->get_output_port(0),
+                    interlock->traffic_input());
   builder_->Connect(aggregator_->get_output_port(0),
                     controller->traffic_input());
+
   builder_->Connect(controller->acceleration_output(),
                     railcar->command_input());
   return id;

@@ -29,6 +29,7 @@ drake_cc_package_library(
     name = "automotive",
     deps = [
         ":automotive_simulator",
+        ":bh_checker",
         ":bicycle_car",
         ":box_car_vis",
         ":calc_ongoing_road_position",
@@ -236,6 +237,22 @@ drake_cc_library(
     name = "interlock",
     srcs = ["interlock.cc"],
     hdrs = ["interlock.h"],
+    deps = [
+        ":generated_vectors",
+        ":pose_selector",
+        "//automotive/maliput/api",
+        "//common:default_scalars",
+        "//systems/framework:leaf_system",
+        "//systems/rendering:pose_bundle",
+        "//systems/rendering:pose_vector",
+    ],
+)
+
+
+drake_cc_library(
+    name = "bh_checker",
+    srcs = ["bh_checker.cc"],
+    hdrs = ["bh_checker.h"],
     deps = [
         ":generated_vectors",
         ":pose_selector",
@@ -499,6 +516,7 @@ drake_cc_library(
     srcs = ["automotive_simulator.cc"],
     hdrs = ["automotive_simulator.h"],
     deps = [
+        ":bh_checker",
         ":car_vis_applicator",
         ":driving_command_mux",
         ":generated_translators",

@@ -38,12 +38,12 @@ Interlock<T>::Interlock(const RoadGeometry& road,
       ego_velocity_index_(
           this->DeclareVectorInputPort(FrameVelocity<T>()).get_index()),
       traffic_index_(this->DeclareAbstractInputPort().get_index()),
-      acceleration_index(this->DeclareVectorOutputPort(
+      acceleration_index_(this->DeclareVectorOutputPort(
         systems::BasicVector<T>(1),
         &Interlock::CalcAcceleration).get_index()),
-      bh_bit_index(this->DeclareVectorOutputPort(
+      bh_bit_index_(this->DeclareVectorOutputPort(
         systems::BasicVector<T>(1),
-        &Interlock::CalcBHBit).get_index())
+        &Interlock::CalcBhBit).get_index())
 
       { /* intializing */ }
 
@@ -70,7 +70,7 @@ const systems::InputPortDescriptor<T>& Interlock<T>::traffic_input() const {
 
 template <typename T>
 const systems::OutputPort<T>& Interlock<T>::acceleration_output() const {
-  return systems::System<T>::get_output_port(acceleration_output_index_);
+  return systems::System<T>::get_output_port(acceleration_index_);
 }
 
 template <typename T>
@@ -78,24 +78,6 @@ const systems::OutputPort<T>& Interlock<T>::bh_bit_output() const {
   return systems::System<T>::get_output_port(bh_bit_index_);
 }
 
-template <typename T>
-void Interlock<T>::CalcPose(
-    const systems::Context<T>& context,
-    PoseVector<T>* pose) const {
-  const PoseVector<T>* const ego_pose_input =
-      this->template EvalVectorInput<PoseVector>(context, ego_pose_index_);
-  pose->set_translation(ego_pose_input->get_translation());
-  pose->set_rotation(ego_pose_input->get_rotation());
-}
-
-template <typename T>
-void Interlock<T>::CalcVelocity(
-    const systems::Context<T>& context,
-    FrameVelocity<T>* velocity) const {
-  const FrameVelocity<T>* const velocity_input =
-      this->template EvalVectorInput<FrameVelocity>(context, ego_velocity_index_);
-  velocity->set_velocity(velocity_input->get_velocity());
-}
 
 template <typename T>
 void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
@@ -109,10 +91,6 @@ void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
     (*bh_bit_output)[0] = 0.0; // TODO Justine
 
 }
-
-template <typename T>
-void Interlock<T>::CalcAcceleration(
-    const
 
 }  // namespace automotive
 }  // namespace drake

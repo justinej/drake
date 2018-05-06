@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "drake/automotive/driving_command_mux.h"
+#include "drake/automotive/bh_checker.h"
 #include "drake/automotive/gen/driving_command.h"
 #include "drake/automotive/gen/driving_command_translator.h"
 #include "drake/automotive/gen/maliput_railcar_state_translator.h"
@@ -374,6 +375,12 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
                                                      road_position_strategy,
                                                      period_sec);
   interlock->set_name(name + "_Interlock");
+
+  auto bh_checker =
+      builder_->template AddSystem<BhChecker<T>>(*road_, path_or_branches,
+                                                    road_position_strategy,
+                                                     period_sec);
+  bh_checker->set_name(name + "_BhChecker");
   
 
   // TODO Justine
@@ -393,12 +400,14 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
                     controller->traffic_input());
 
   builder_->Connect(controller->acceleration_output(),
-                    railcar->command_input());
-
+                    bh_checker->controller_acceleration_input());
   builder_->Connect(interlock->acceleration_output(),
-                    railcar->command2_input()); //TODO
+                    bh_checker->interlock_acceleration_input());
   builder_->Connect(interlock->bh_bit_output(),
-                    railcar->bh_bit_input()); //TODO
+                    bh_checker->interlock_bh_bit_input());
+
+  builder_->Connect(bh_checker->acceleration_output(),
+                    railcar->command_input());
   return id;
 }
 

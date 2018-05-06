@@ -379,12 +379,12 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
   // TODO Justine
   builder_->Connect(railcar->pose_output(),
                     interlock->ego_pose_input());
-  builder_->Connect(interlock->ego_pose_output(),
+  builder_->Connect(railcar->pose_output(),
                     controller->ego_pose_input());
 
   builder_->Connect(railcar->velocity_output(),
                     interlock->ego_velocity_input());
-  builder_->Connect(interlock->ego_velocity_output(),
+  builder_->Connect(railcar->velocity_output(),
                     controller->ego_velocity_input());
 
   builder_->Connect(aggregator_->get_output_port(0),
@@ -394,6 +394,11 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
 
   builder_->Connect(controller->acceleration_output(),
                     railcar->command_input());
+
+  builder_->Connect(interlock->acceleration_output(),
+                    railcar->command2_input()); //TODO
+  builder_->Connect(interlock->bh_bit_output(),
+                    railcar->bh_bit_input()); //TODO
   return id;
 }
 

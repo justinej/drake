@@ -169,12 +169,12 @@ void Interlock<T>::ImplCalcBhBit(
                                 (closing_velocity * closing_velocity) / 20;
 
   // Compute the output from the interlock function.
-  // 0 if approaching event horizon, 1 if safe.
-  if (time_needed_to_stop > actual_headway + kReactionDistance) {
-    (*bh_output)[0] = 0;
-  } else {
+  // 1 if there is a black hole, 0 if safe
+  if (time_needed_to_stop > headway_distance + kReactionDistance) {
     (*bh_output)[0] = 1;
-  } 
+  } else {
+    (*bh_output)[0] = 0;
+  }
 }
 
 }  // namespace automotive

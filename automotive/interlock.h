@@ -61,16 +61,20 @@ class Interlock : public systems::LeafSystem<T> {
   /// @param period_sec The update period to use if road_position_strategy ==
   /// RoadPositionStrategy::kCache.
   Interlock(const maliput::api::RoadGeometry& road,
-                ScanStrategy path_or_branches,
-                RoadPositionStrategy road_position_strategy,
-                double period_sec);
+            ScanStrategy path_or_branches,
+            RoadPositionStrategy road_position_strategy,
+            double period_sec,
+            const double max_deacceleration,
+            const double max_speed);
 
   /// Scalar-converting copy constructor.  See @ref system_scalar_conversion.
   template <typename U>
   explicit Interlock(const Interlock<U>& other)
       : Interlock<T>(other.road_, other.path_or_branches_,
                          other.road_position_strategy_,
-                         other.period_sec_) {}
+                         other.period_sec_,
+                         other.max_deacceleration_,
+                         other.max_speed_) {}
 
   ~Interlock() override;
 
@@ -103,6 +107,8 @@ class Interlock : public systems::LeafSystem<T> {
   const ScanStrategy path_or_branches_{};
   const RoadPositionStrategy road_position_strategy_{};
   const double period_sec_{};
+  const double max_deacceleration_{};
+  const double max_speed_{};
 
   // Indices for the input / output ports.
   const int ego_pose_index_{};

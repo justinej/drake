@@ -1,6 +1,7 @@
 #include "drake/automotive/interlock.h"
 
 #include <algorithm>
+#include <iostream>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -26,19 +27,23 @@ using systems::rendering::PoseVector;
 const double kScanAheadDistance = 300.0;
 
 // A minimum buffer distance required to avoid a crash.
-const double kReactionDistance = 50.0;
+const double kReactionDistance = 1.0;
 
 template <typename T>
 Interlock<T>::Interlock(const RoadGeometry& road,
-                                ScanStrategy path_or_branches,
-                                RoadPositionStrategy road_position_strategy,
-                                double period_sec)
+                        ScanStrategy path_or_branches,
+                        RoadPositionStrategy road_position_strategy,
+                        double period_sec,
+                        const double max_deacceleration,
+                        const double max_speed)
     : systems::LeafSystem<T>(
           systems::SystemTypeTag<automotive::Interlock>{}),
       road_(road),
       path_or_branches_(path_or_branches),
       road_position_strategy_(road_position_strategy),
       period_sec_(period_sec),
+      max_deacceleration_(max_deacceleration),
+      max_speed_(max_speed),
       ego_pose_index_(
           this->DeclareVectorInputPort(PoseVector<T>()).get_index()),
       ego_velocity_index_(
@@ -84,12 +89,11 @@ const systems::OutputPort<T>& Interlock<T>::bh_bit_output() const {
   return systems::System<T>::get_output_port(bh_bit_index_);
 }
 
-// Returns a large de-acceleration value, the car can impose
-// a mas
+// Returns the max deacceleration of the car
 template <typename T>
 void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
                       systems::BasicVector<T>* accel_output) const {
-    (*accel_output)[0] = -100.0; // TODO Justine
+    (*accel_output)[0] = -max_deacceleration_;
 }
 
 // Returns 0.0 if there is no black hole (so we should read the controller's
@@ -166,11 +170,11 @@ void Interlock<T>::ImplCalcBhBit(
 
   // Reference: https://arachnoid.com/lutusp/auto.html
   const T time_needed_to_stop = 2.2 * closing_velocity + 
-                                (closing_velocity * closing_velocity) / 20;
+                               (closing_velocity * closing_velocity) / (2 * T(max_deacceleration_));
 
   // Compute the output from the interlock function.
   // 1 if there is a black hole, 0 if safe
-  if (time_needed_to_stop > headway_distance + kReactionDistance) {
+  if (time_needed_to_stop > (headway_distance - kReactionDistance - T(5.0 /*length of the car */))) {
     (*bh_output)[0] = 1;
   } else {
     (*bh_output)[0] = 0;

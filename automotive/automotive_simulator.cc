@@ -373,7 +373,9 @@ int AutomotiveSimulator<T>::AddIdmControlledPriusMaliputRailcar(
   auto interlock =
       builder_->template AddSystem<Interlock<T>>(*road_, path_or_branches,
                                                      road_position_strategy,
-                                                     period_sec);
+                                                     period_sec,
+                                                     params.max_deacceleration(),
+                                                     params.max_speed());
   interlock->set_name(name + "_Interlock");
 
   auto bh_checker =

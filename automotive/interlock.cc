@@ -84,13 +84,17 @@ const systems::OutputPort<T>& Interlock<T>::bh_bit_output() const {
   return systems::System<T>::get_output_port(bh_bit_index_);
 }
 
-
+// Returns a large de-acceleration value, the car can impose
+// a mas
 template <typename T>
 void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
                       systems::BasicVector<T>* accel_output) const {
-    (*accel_output)[0] = 5.0; // TODO Justine
+    (*accel_output)[0] = -100.0; // TODO Justine
 }
 
+// Returns 0.0 if there is no black hole (so we should read the controller's
+// acceleration) or 1.0 if we are in the black hole (so we should read
+// Interlock's acceleration)
 template <typename T>
 void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
                       systems::BasicVector<T>* bh_bit_output) const {
@@ -117,11 +121,8 @@ void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
     DRAKE_ASSERT(context.get_num_abstract_states() == 1);
     ego_rp = context.template get_abstract_state<RoadPosition>(0);
   }
-
   return ImplCalcBhBit(*ego_pose, *ego_velocity, *traffic_poses, ego_rp,
                        bh_bit_output);
-
-
 }
 
 template <typename T>

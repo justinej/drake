@@ -22,6 +22,9 @@ using systems::rendering::FrameVelocity;
 using systems::rendering::PoseBundle;
 using systems::rendering::PoseVector;
 
+// A very large distance to make sure we can always detect a potential danger ahead.
+const double kScanAheadDistance = 300.0;
+
 template <typename T>
 Interlock<T>::Interlock(const RoadGeometry& road,
                                 ScanStrategy path_or_branches,
@@ -88,8 +91,80 @@ void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
 template <typename T>
 void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
                       systems::BasicVector<T>* bh_bit_output) const {
-    (*bh_bit_output)[0] = 0.0; // TODO Justine
+  // TODO: A separate files to store parameters?
 
+  // Obtain the necessary input data for determing whether we are
+  // close to entering "event horizon".
+  const PoseVector<T>* const ego_pose =
+      this->template EvalVectorInput<PoseVector>(context, ego_pose_index_);
+  DRAKE_ASSERT(ego_pose != nullptr);
+
+  const FrameVelocity<T>* const ego_velocity =
+      this->template EvalVectorInput<FrameVelocity>(context,
+                                                    ego_velocity_index_);
+  DRAKE_ASSERT(ego_velocity != nullptr);
+
+  const PoseBundle<T>* const traffic_poses =
+      this->template EvalInputValue<PoseBundle<T>>(context, traffic_index_);
+  DRAKE_ASSERT(traffic_poses != nullptr);
+
+  // Obtain the state if we've allocated it.
+  RoadPosition ego_rp;
+  if (context.template get_state().get_abstract_state().size() != 0) {
+    DRAKE_ASSERT(context.get_num_abstract_states() == 1);
+    ego_rp = context.template get_abstract_state<RoadPosition>(0);
+  }
+
+  return ImplCalcBhBit(*ego_pose, *ego_velocity, *traffic_poses, ego_rp,
+                       bh_bit_output);
+
+
+}
+
+template <typename T>
+void Interlock<T>::ImplCalcBhBit(
+    const PoseVector<T>& ego_pose, const FrameVelocity<T>& ego_velocity,
+    const PoseBundle<T>& traffic_poses,
+    const RoadPosition& ego_rp,
+    systems::BasicVector<T>* bh_output) const {
+  using std::abs;
+  using std::max;
+
+  RoadPosition ego_position = ego_rp;
+  if (!ego_rp.lane) {
+    const auto gp =
+        GeoPositionT<T>::FromXyz(ego_pose.get_isometry().translation());
+    ego_position =
+        road_.ToRoadPosition(gp.MakeDouble(), nullptr, nullptr, nullptr);
+  }
+
+  // Find the single closest car ahead.
+  const ClosestPose<T> lead_car_pose = PoseSelector<T>::FindSingleClosestPose(
+      ego_position.lane, ego_pose, traffic_poses,
+      kScanAheadDistance, AheadOrBehind::kAhead,
+      path_or_branches_);
+  const T headway_distance = lead_car_pose.distance;
+
+  const LanePositionT<T> lane_position(T(ego_position.pos.s()),
+                                       T(ego_position.pos.r()),
+                                       T(ego_position.pos.h()));
+  const T s_dot_ego = PoseSelector<T>::GetSigmaVelocity(
+      {ego_position.lane, lane_position, ego_velocity});
+  const T s_dot_lead =
+      (abs(lead_car_pose.odometry.pos.s()) ==
+       std::numeric_limits<T>::infinity())
+          ? T(0.)
+          : PoseSelector<T>::GetSigmaVelocity(lead_car_pose.odometry);
+
+  // Saturate the net_distance at `idm_params.distance_lower_limit()` away from
+  // the ego car to avoid near-singular solutions inherent to the IDM equation.
+  const T actual_headway = headway_distance - idm_params.bloat_diameter();
+  const T net_distance = max(actual_headway, idm_params.distance_lower_limit());
+  const T closing_velocity = s_dot_ego - s_dot_lead;
+
+  // Compute the acceleration output from the interlock function.
+  (*bh_output)[0] = IdmPlanner<T>::Evaluate(idm_params, s_dot_ego, net_distance,
+                                          closing_velocity);
 }
 
 }  // namespace automotive

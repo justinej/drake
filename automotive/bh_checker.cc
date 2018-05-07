@@ -72,10 +72,28 @@ const systems::OutputPort<T>& BhChecker<T>::acceleration_output() const {
   return systems::System<T>::get_output_port(acceleration_output_index_);
 }
 
+// if bh_bit is 0.0, then accel_output is from controller
+// if bh_bit is 1.0, then accel_output is from interlock
 template <typename T>
 void BhChecker<T>::CalcAcceleration(const systems::Context<T>& context,
                       systems::BasicVector<T>* accel_output) const {
-    (*accel_output)[0] = 5.0; // TODO Justine
+
+    const systems::BasicVector<T>* const bh_bit_input =
+        this->template EvalVectorInput<systems::BasicVector>(context, interlock_bh_bit_index_);
+    const T bh_bit = (*bh_bit_input)[0];
+
+    const systems::BasicVector<T>* const controller_accel_input =
+        this->template EvalVectorInput<systems::BasicVector>(context, controller_acceleration_index_);
+    const T controller_accel = (*controller_accel_input)[0];
+
+    const systems::BasicVector<T>* const interlock_accel_input =
+        this->template EvalVectorInput<systems::BasicVector>(context, interlock_acceleration_index_);
+    const T interlock_accel = (*interlock_accel_input)[0];
+
+    if (bh_bit == 0)
+        (*accel_output)[0] = controller_accel;
+    else
+        (*accel_output)[0] = interlock_accel;
 }
 
 }  // namespace automotive

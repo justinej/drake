@@ -279,7 +279,7 @@ void MaliputRailcar<T>::ImplCalcTimeDerivatives(
   DRAKE_ASSERT(motion_derivatives.h() == 0);
   rates->set_s(motion_derivatives.s());
 
-  const T desired_acceleration = input.GetAtIndex(0);
+  const T desired_acceleration = std::max(input.GetAtIndex(0), -params.max_deacceleration());
   const T smooth_acceleration = calc_smooth_acceleration(
       desired_acceleration, params.max_speed(), params.velocity_limit_kp(),
       state.speed());

@@ -116,6 +116,12 @@ class Interlock : public systems::LeafSystem<T> {
                         systems::BasicVector<T>* accel_output) const;
   void CalcBhBit(const systems::Context<T>& context,
                         systems::BasicVector<T>* bh_bit_output) const;
+  void ImplCalcBhBit(
+      const systems::rendering::PoseVector<T>& ego_pose,
+      const systems::rendering::FrameVelocity<T>& ego_velocity,
+      const systems::rendering::PoseBundle<T>& traffic_poses,
+      const maliput::api::RoadPosition& ego_rp,
+      systems::BasicVector<T>* bh_output) const;
 
 };
 

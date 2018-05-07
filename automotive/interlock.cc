@@ -25,6 +25,9 @@ using systems::rendering::PoseVector;
 // A very large distance to make sure we can always detect a potential danger ahead.
 const double kScanAheadDistance = 300.0;
 
+// A minimum buffer distance required to avoid a crash.
+const double kReactionDistance = 50.0;
+
 template <typename T>
 Interlock<T>::Interlock(const RoadGeometry& road,
                                 ScanStrategy path_or_branches,
@@ -156,15 +159,21 @@ void Interlock<T>::ImplCalcBhBit(
           ? T(0.)
           : PoseSelector<T>::GetSigmaVelocity(lead_car_pose.odometry);
 
-  // Saturate the net_distance at `idm_params.distance_lower_limit()` away from
-  // the ego car to avoid near-singular solutions inherent to the IDM equation.
-  const T actual_headway = headway_distance - idm_params.bloat_diameter();
-  const T net_distance = max(actual_headway, idm_params.distance_lower_limit());
+  // Calculate velocity of the ego car relative to the closest car ahead.
   const T closing_velocity = s_dot_ego - s_dot_lead;
 
-  // Compute the acceleration output from the interlock function.
-  (*bh_output)[0] = IdmPlanner<T>::Evaluate(idm_params, s_dot_ego, net_distance,
-                                          closing_velocity);
+
+  // Reference: https://arachnoid.com/lutusp/auto.html
+  const T time_needed_to_stop = 2.2 * closing_velocity + 
+                                (closing_velocity * closing_velocity) / 20;
+
+  // Compute the output from the interlock function.
+  // 0 if approaching event horizon, 1 if safe.
+  if (time_needed_to_stop > actual_headway + kReactionDistance) {
+    (*bh_output)[0] = 0;
+  } else {
+    (*bh_output)[0] = 1;
+  } 
 }
 
 }  // namespace automotive

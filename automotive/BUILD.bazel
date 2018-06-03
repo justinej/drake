@@ -511,6 +511,25 @@ drake_cc_binary(
     ],
 )
 
+
+drake_cc_binary(
+    name = "automotive_simple_sim",
+    srcs = [
+        "simple_sim.cc",
+    ],
+    data = [
+        "//automotive/models:prod_models",
+    ],
+    deps = [
+        ":automotive_simulator",
+        ":create_trajectory_params",
+        ":monolane_onramp_merge",
+        "//automotive/maliput/dragway",
+        "//common:text_logging_gflags",
+        "//lcm",
+    ],
+)
+
 drake_cc_binary(
     name = "car_sim_lcm",
     srcs = [
@@ -563,6 +582,22 @@ drake_py_binary(
         "@lcm//:lcm-logger",
     ],
     main = "automotive_demo.py",
+    deps = [
+        "@lcm//:lcm-python",
+    ],
+)
+
+drake_py_binary(
+    name = "simple_sim",
+    srcs = ["simple_sim.py"],
+    data = [
+        ":automotive_simple_sim",
+        ":lcm-spy",
+        ":steering_command_driver",
+        "//tools:drake_visualizer",
+        "@lcm//:lcm-logger",
+    ],
+    main = "simple_sim.py",
     deps = [
         "@lcm//:lcm-python",
     ],

@@ -13,6 +13,13 @@
 #include "drake/common/text_logging_gflags.h"
 #include "drake/lcm/drake_lcm.h"
 
+// A simple simulation of two cars in one lane, with parameters that can be
+// accessed from the command line. The car in front is a Simple Car that travels
+// at velocity {v1}, and immediately accelerates at acceleration {accel}. The car
+// in back is a IDM/Interlock controlled Maliput Railcar that travels at velocity
+// {v2}, distance {distance} behind the first car and attempts to brake in reaction
+// to the car in front.
+
 
 DEFINE_int32(v1, 50, "initial speed in mph of Simple Car in front");
 DEFINE_int32(v2, 50, "initial speed in mph of IDM/Interlock-controlled Maliput Railcar in back");

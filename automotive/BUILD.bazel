@@ -639,6 +639,19 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "crash_test",
+    data = ["//automotive/models:prod_models"],
+    # Flaky because LCM self-test can fail (PR #7311)
+    flaky = 1,
+    deps = [
+        "//automotive:automotive_simulator",
+        "//automotive:create_trajectory_params",
+        "//automotive/maliput/dragway",
+        "//lcm:mock",
+    ],
+)
+
+drake_cc_googletest(
     name = "bicycle_car_test",
     deps = [
         "//automotive:bicycle_car",

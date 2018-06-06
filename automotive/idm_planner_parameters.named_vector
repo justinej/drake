@@ -72,6 +72,6 @@ element {
      name: "scan_ahead_distance"
      doc: "distance to scan ahead on road for a leading vehicle"
      doc_units: "m"
-     default_value: "10.0" # TODO Justine: default is 100.0
+     default_value: "100.0"
      min_value: "0.0"
 }

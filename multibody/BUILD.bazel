@@ -27,6 +27,7 @@ drake_cc_library(
     deps = [
         ":rigid_body_tree",
         "//solvers:mathematical_program",
+        "//solvers:mixed_integer_rotation_constraint",
         "//solvers:rotation_constraint",
     ],
 )
@@ -125,6 +126,7 @@ drake_cc_library(
         "kinematics_cache-inl.h",
     ],
     deps = [
+        ":rigid_body_tree_datatypes",
         "//common:autodiff",
         "//common:essential",
         "//multibody/joints",
@@ -465,7 +467,7 @@ drake_cc_googletest(
         ":rigid_body_tree",
         "//common:find_resource",
         "//common/test_utilities:eigen_matrix_compare",
-        "//multibody/benchmarks/acrobot",
+        "//multibody/benchmarks/acrobot:analytical_acrobot",
         "//multibody/parsers",
     ],
 )

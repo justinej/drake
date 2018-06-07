@@ -14,8 +14,10 @@
 #include "drake/common/drake_assert.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/common/drake_deprecated.h"
+#include "drake/common/drake_optional.h"
 #include "drake/common/eigen_types.h"
 #include "drake/common/number_traits.h"
+#include "drake/common/pointer_cast.h"
 #include "drake/common/unused.h"
 #include "drake/systems/framework/abstract_values.h"
 #include "drake/systems/framework/basic_vector.h"
@@ -96,10 +98,8 @@ class LeafSystem : public System<T> {
   /// Shadows System<T>::AllocateContext to provide a more concrete return
   /// type LeafContext<T>.
   std::unique_ptr<LeafContext<T>> AllocateContext() const {
-    std::unique_ptr<Context<T>> context = System<T>::AllocateContext();
-    DRAKE_DEMAND(dynamic_cast<Context<T>*>(context.get()) != nullptr);
-    return std::unique_ptr<LeafContext<T>>(
-        static_cast<LeafContext<T>*>(context.release()));
+    return dynamic_pointer_cast_or_throw<LeafContext<T>>(
+        System<T>::AllocateContext());
   }
 
   // =========================================================================
@@ -128,8 +128,6 @@ class LeafSystem : public System<T> {
 
   std::unique_ptr<ContextBase> DoMakeContext() const final {
     std::unique_ptr<LeafContext<T>> context = DoMakeLeafContext();
-    // Reserve inputs that have already been declared.
-    context->SetNumInputPorts(this->get_num_input_ports());
     // Reserve continuous state via delegation to subclass.
     context->set_continuous_state(this->AllocateContinuousState());
     // Reserve discrete state via delegation to subclass.
@@ -1554,7 +1552,8 @@ class LeafSystem : public System<T> {
       typename LeafOutputPort<T>::AllocCallback vector_allocator,
       typename LeafOutputPort<T>::CalcVectorCallback vector_calculator) {
     auto port = std::make_unique<LeafOutputPort<T>>(
-        *this, fixed_size, vector_allocator, vector_calculator);
+        *this, *this, OutputPortIndex(this->get_num_output_ports()),
+        fixed_size, vector_allocator, vector_calculator);
     LeafOutputPort<T>* const port_ptr = port.get();
     this->CreateOutputPort(std::move(port));
     return *port_ptr;
@@ -1565,8 +1564,9 @@ class LeafSystem : public System<T> {
   LeafOutputPort<T>& CreateAbstractLeafOutputPort(
       typename LeafOutputPort<T>::AllocCallback allocator,
       typename LeafOutputPort<T>::CalcCallback calculator) {
-    auto port =
-        std::make_unique<LeafOutputPort<T>>(*this, allocator, calculator);
+    auto port = std::make_unique<LeafOutputPort<T>>(
+        *this, *this, OutputPortIndex(this->get_num_output_ports()),
+        allocator, calculator);
     LeafOutputPort<T>* const port_ptr = port.get();
     this->CreateOutputPort(std::move(port));
     return *port_ptr;

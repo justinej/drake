@@ -8,12 +8,13 @@ load(
     "drake_cc_package_library",
 )
 load(
-    "@drake//tools/skylark:drake_java.bzl",
-    "drake_java_binary",
-)
-load(
     "@drake//tools/skylark:drake_py.bzl",
     "drake_py_binary",
+    "drake_py_unittest",
+)
+load(
+    "@drake//tools/skylark:drake_java.bzl",
+    "drake_java_binary",
 )
 load(
     "@drake//tools/vector_gen:vector_gen.bzl",
@@ -27,7 +28,6 @@ package(default_visibility = ["//visibility:public"])
 drake_cc_package_library(
     name = "automotive",
     deps = [
-        ":agent_trajectory",
         ":automotive_simulator",
         ":bh_checker",
         ":bicycle_car",
@@ -55,7 +55,9 @@ drake_cc_package_library(
         ":road_path",
         ":simple_car",
         ":simple_powertrain",
+        ":trajectory",
         ":trajectory_car",
+        ":trajectory_follower",
         ":trivial_right_of_way_state_provider",
     ],
 )
@@ -94,9 +96,9 @@ drake_cc_vector_gen_translator_library(
 )
 
 drake_cc_library(
-    name = "agent_trajectory",
-    srcs = ["agent_trajectory.cc"],
-    hdrs = ["agent_trajectory.h"],
+    name = "trajectory",
+    srcs = ["trajectory.cc"],
+    hdrs = ["trajectory.h"],
     deps = [
         "//common/trajectories:piecewise_polynomial",
         "//common/trajectories:piecewise_quaternion",
@@ -429,6 +431,21 @@ drake_cc_library(
 )
 
 drake_cc_library(
+    name = "trajectory_follower",
+    srcs = ["trajectory_follower.cc"],
+    hdrs = ["trajectory_follower.h"],
+    deps = [
+        ":generated_vectors",
+        ":trajectory",
+        "//common:autodiff",
+        "//common:extract_double",
+        "//systems/framework:leaf_system",
+        "//systems/rendering:frame_velocity",
+        "//systems/rendering:pose_vector",
+    ],
+)
+
+drake_cc_library(
     name = "trajectory_car",
     srcs = ["trajectory_car.cc"],
     hdrs = ["trajectory_car.h"],
@@ -617,9 +634,9 @@ drake_cc_library(
 )
 
 drake_cc_googletest(
-    name = "agent_trajectory_test",
+    name = "trajectory_test",
     deps = [
-        "//automotive:agent_trajectory",
+        "//automotive:trajectory",
         "//common/test_utilities:eigen_matrix_compare",
         "//systems/framework/test_utilities",
     ],
@@ -821,6 +838,16 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "trajectory_follower_test",
+    deps = [
+        "//automotive:trajectory_follower",
+        "//common:extract_double",
+        "//systems/analysis:simulator",
+        "//systems/framework/test_utilities",
+    ],
+)
+
+drake_cc_googletest(
     name = "trajectory_car_test",
     deps = [
         "//automotive:autodiff_test_utilities",
@@ -850,6 +877,16 @@ drake_cc_googletest(
     name = "trivial_right_of_way_state_provider_test",
     deps = [
         ":trivial_right_of_way_state_provider",
+        "//automotive/maliput/api/test_utilities:rules_test_utilities",
+    ],
+)
+
+drake_py_unittest(
+    name = "steering_command_driver_test",
+    flaky = 1,
+    deps = [
+        ":steering_command_driver",
+        "@lcm//:lcm-python",
     ],
 )
 

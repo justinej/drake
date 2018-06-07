@@ -6,6 +6,8 @@
 
 #include "drake/common/find_resource.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
+#include "drake/geometry/geometry_instance.h"
+#include "drake/geometry/scene_graph.h"
 #include "drake/multibody/benchmarks/acrobot/make_acrobot_plant.h"
 #include "drake/multibody/multibody_tree/joints/revolute_joint.h"
 #include "drake/multibody/multibody_tree/multibody_plant/multibody_plant.h"
@@ -14,8 +16,12 @@
 namespace drake {
 
 using Eigen::Vector3d;
+using geometry::GeometryId;
+using geometry::GeometryInstance;
+using geometry::SceneGraph;
 using multibody::benchmarks::acrobot::AcrobotParameters;
 using multibody::benchmarks::acrobot::MakeAcrobotPlant;
+using multibody::Body;
 using multibody::parsing::AddModelFromSdfFile;
 using systems::Context;
 
@@ -36,6 +42,7 @@ class AcrobotModelTests : public ::testing::Test {
 
     ASSERT_TRUE(plant_->HasJointNamed("ShoulderJoint"));
     ASSERT_TRUE(plant_->HasJointNamed("ElbowJoint"));
+    ASSERT_TRUE(plant_->HasJointActuatorNamed("ElbowJoint"));
 
     shoulder_ = &plant_->GetJointByName<RevoluteJoint>("ShoulderJoint");
     elbow_ = &plant_->GetJointByName<RevoluteJoint>("ElbowJoint");
@@ -91,9 +98,12 @@ TEST_F(AcrobotModelTests, ModelBasics) {
   // Model Size. Counting the world body, there should be three bodies.
   EXPECT_EQ(benchmark_plant_->num_bodies(), plant_->num_bodies());
   EXPECT_EQ(benchmark_plant_->num_joints(), plant_->num_joints());
-  // Even though our benchmark model does, the parsed model has no actuators.
-  EXPECT_EQ(0, plant_->num_actuators());
-  EXPECT_EQ(0, plant_->num_actuated_dofs());
+
+  // Verify we parsed the actuated joint correctly.
+  EXPECT_EQ(1, plant_->num_actuators());
+  EXPECT_EQ(1, plant_->num_actuated_dofs());
+  EXPECT_EQ(plant_->GetJointActuatorByName("ElbowJoint").joint().index(),
+            elbow_->index());
 
   // State size.
   EXPECT_EQ(plant_->num_positions(), benchmark_plant_->num_positions());
@@ -141,8 +151,132 @@ TEST_F(AcrobotModelTests, VerifyMassMatrixAgainstBenchmark) {
   VerifySdfModelMassMatrix(-M_PI / 3, -3 * M_PI / 4);
 }
 
+// Fixture to setup a simple model with both collision and visual geometry,
+// loaded with the SDF parser.
+class MultibodyPlantSdfParser : public ::testing::Test {
+ public:
+  void SetUp() override {
+    const std::string kSdfPath =
+        "drake/multibody/multibody_tree/parsing/test/"
+            "links_with_visuals_and_collisions.sdf";
+    full_name_ = FindResourceOrThrow(kSdfPath);
+  }
+
+  // Loads the MultibodyPlant part of the model. Geometry is ignored.
+  void LoadMultibodyPlantOnly() {
+    AddModelFromSdfFile(full_name_, &plant_);
+    plant_.Finalize();
+  }
+
+  // Loads the entire model including the multibody dynamics part of it and the
+  // geometries for both visualization and contact modeling.
+  void LoadMultibodyPlantAndSceneGraph() {
+    AddModelFromSdfFile(full_name_, &plant_, &scene_graph_);
+    plant_.Finalize(&scene_graph_);
+  }
+
+ protected:
+  MultibodyPlant<double> plant_;
+  SceneGraph<double> scene_graph_;
+  std::string full_name_;
+};
+
+// Verifies we can parse link visuals.
+TEST_F(MultibodyPlantSdfParser, LinkWithVisuals) {
+  LoadMultibodyPlantAndSceneGraph();
+
+  EXPECT_EQ(plant_.num_bodies(), 4);  // It includes the world body.
+  EXPECT_EQ(plant_.num_visual_geometries(), 5);
+
+  const std::vector<GeometryId>& link1_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link1"));
+  EXPECT_EQ(link1_visual_geometry_ids.size(), 2);
+
+  const std::vector<GeometryId>& link2_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link2"));
+  EXPECT_EQ(link2_visual_geometry_ids.size(), 3);
+
+  const std::vector<GeometryId>& link3_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link3"));
+  EXPECT_EQ(link3_visual_geometry_ids.size(), 0);
+
+  // TODO(SeanCurtis-TRI): Once SG supports it, confirm `GeometryId` maps to the
+  // correct geometry.
+}
+
+// Verifies we can still parse the model dynamics if a SceneGraph is not
+// supplied.
+TEST_F(MultibodyPlantSdfParser, ParseWithoutASceneGraph) {
+  LoadMultibodyPlantOnly();
+
+  EXPECT_EQ(plant_.num_bodies(), 4);  // It includes the world body.
+  EXPECT_EQ(plant_.num_visual_geometries(), 0);
+}
+
+// Verifies that the source registration with a SceneGraph can happen before a
+// call to AddModelFromSdfFile().
+TEST_F(MultibodyPlantSdfParser, RegisterWithASceneGraphBeforeParsing) {
+  plant_.RegisterAsSourceForSceneGraph(&scene_graph_);
+  LoadMultibodyPlantAndSceneGraph();
+
+  EXPECT_EQ(plant_.num_bodies(), 4);  // It includes the world body.
+  EXPECT_EQ(plant_.num_visual_geometries(), 5);
+
+  const std::vector<GeometryId>& link1_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link1"));
+  EXPECT_EQ(link1_visual_geometry_ids.size(), 2);
+
+  // TODO(sam.creasey) Verify that the path to the mesh for the second
+  // visual geometry on link 1 is resolved correctly.  Currently the
+  // resolved mesh filename is trapped inside the shape object within
+  // the scene graph and I can't find any good way to dig it back out.
+  // It would be possible to modify geometry::DispatchLoadMessage to
+  // take a DrakeLcmInterface and then scrape the filename out of the
+  // resulting lcmt_viewer_load_robot message, but I don't want to.
+
+  const std::vector<GeometryId>& link2_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link2"));
+  EXPECT_EQ(link2_visual_geometry_ids.size(), 3);
+
+  const std::vector<GeometryId>& link3_visual_geometry_ids =
+      plant_.GetVisualGeometriesForBody(plant_.GetBodyByName("link3"));
+  EXPECT_EQ(link3_visual_geometry_ids.size(), 0);
+
+  // TODO(SeanCurtis-TRI): Once SG supports it, confirm `GeometryId` maps to the
+  // correct geometry.
+}
+
+// Verifies we can parse link collision geometries and surface friction.
+TEST_F(MultibodyPlantSdfParser, LinksWithCollisions) {
+  LoadMultibodyPlantAndSceneGraph();
+
+  EXPECT_EQ(plant_.num_bodies(), 4);  // It includes the world body.
+  EXPECT_EQ(plant_.num_collision_geometries(), 3);
+
+  const std::vector<GeometryId>& link1_collision_geometry_ids =
+      plant_.GetCollisionGeometriesForBody(plant_.GetBodyByName("link1"));
+  ASSERT_EQ(link1_collision_geometry_ids.size(), 2);
+
+  EXPECT_TRUE(ExtractBoolOrThrow(
+      plant_.default_coulomb_friction(link1_collision_geometry_ids[0]) ==
+          CoulombFriction<double>(0.8, 0.3)));
+  EXPECT_TRUE(ExtractBoolOrThrow(
+      plant_.default_coulomb_friction(link1_collision_geometry_ids[1]) ==
+          CoulombFriction<double>(1.5, 0.6)));
+
+  const std::vector<GeometryId>& link2_collision_geometry_ids =
+      plant_.GetCollisionGeometriesForBody(plant_.GetBodyByName("link2"));
+  ASSERT_EQ(link2_collision_geometry_ids.size(), 0);
+
+  const std::vector<GeometryId>& link3_collision_geometry_ids =
+      plant_.GetCollisionGeometriesForBody(plant_.GetBodyByName("link3"));
+  ASSERT_EQ(link3_collision_geometry_ids.size(), 1);
+  EXPECT_TRUE(ExtractBoolOrThrow(
+      plant_.default_coulomb_friction(link3_collision_geometry_ids[0]) ==
+          CoulombFriction<double>(0.5, 0.5)));
+}
+
 }  // namespace
 }  // namespace multibody_plant
 }  // namespace multibody
 }  // namespace drake
-

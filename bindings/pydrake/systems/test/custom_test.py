@@ -95,7 +95,7 @@ class TestCustom(unittest.TestCase):
         return system
 
     def _fix_adder_inputs(self, context):
-        self.assertEquals(context.get_num_input_ports(), 2)
+        self.assertEqual(context.get_num_input_ports(), 2)
         context.FixInputPort(0, BasicVector([1, 2, 3]))
         context.FixInputPort(1, BasicVector([4, 5, 6]))
 
@@ -104,7 +104,7 @@ class TestCustom(unittest.TestCase):
         context = system.CreateDefaultContext()
         self._fix_adder_inputs(context)
         output = system.AllocateOutput(context)
-        self.assertEquals(output.get_num_ports(), 1)
+        self.assertEqual(output.get_num_ports(), 1)
         system.CalcOutput(context, output)
         value = output.get_vector_data(0).get_value()
         self.assertTrue(np.allclose([5, 7, 9], value))
@@ -140,6 +140,7 @@ class TestCustom(unittest.TestCase):
                 LeafSystem.__init__(self)
                 self.called_publish = False
                 self.called_feedthrough = False
+                self.called_continuous = False
                 self.called_discrete = False
                 # Ensure we have desired overloads.
                 self._DeclarePeriodicPublish(0.1)
@@ -147,6 +148,7 @@ class TestCustom(unittest.TestCase):
                 self._DeclarePeriodicPublish(period_sec=0.1, offset_sec=0.)
                 self._DeclarePeriodicDiscreteUpdate(
                     period_sec=0.1, offset_sec=0.)
+                self._DeclareContinuousState(2)
                 self._DeclareDiscreteState(1)
                 # Ensure that we have inputs / outputs to call direct
                 # feedthrough.
@@ -160,8 +162,8 @@ class TestCustom(unittest.TestCase):
 
             def _DoHasDirectFeedthrough(self, input_port, output_port):
                 # Test inputs.
-                test.assertEquals(input_port, 0)
-                test.assertEquals(output_port, 0)
+                test.assertEqual(input_port, 0)
+                test.assertEqual(output_port, 0)
                 # Call base method to ensure we do not get recursion.
                 base_return = LeafSystem._DoHasDirectFeedthrough(
                     self, input_port, output_port)
@@ -169,6 +171,12 @@ class TestCustom(unittest.TestCase):
                 # Return custom methods.
                 self.called_feedthrough = True
                 return False
+
+            def _DoCalcTimeDerivatives(self, context, derivatives):
+                # Note:  Don't call base method here; it would abort because
+                # derivatives.size() != 0.
+                test.assertEqual(derivatives.get_vector().size(), 2)
+                self.called_continuous = True
 
             def _DoCalcDiscreteVariableUpdates(
                     self, context, events, discrete_state):
@@ -180,13 +188,15 @@ class TestCustom(unittest.TestCase):
         system = TrivialSystem()
         self.assertFalse(system.called_publish)
         self.assertFalse(system.called_feedthrough)
+        self.assertFalse(system.called_continuous)
         self.assertFalse(system.called_discrete)
         results = call_leaf_system_overrides(system)
         self.assertTrue(system.called_publish)
         self.assertTrue(system.called_feedthrough)
         self.assertFalse(results["has_direct_feedthrough"])
+        self.assertTrue(system.called_continuous)
         self.assertTrue(system.called_discrete)
-        self.assertEquals(results["discrete_next_t"], 0.1)
+        self.assertEqual(results["discrete_next_t"], 0.1)
 
         self.assertFalse(system.HasAnyDirectFeedthrough())
         self.assertFalse(system.HasDirectFeedthrough(output_port=0))
@@ -209,7 +219,7 @@ class TestCustom(unittest.TestCase):
 
             # Check call order.
             update_type = is_discrete and "discrete" or "continuous"
-            self.assertEquals(
+            self.assertEqual(
                 system.has_called,
                 [update_type, "feedthrough", "output", "feedthrough"])
 
@@ -249,22 +259,22 @@ class TestCustom(unittest.TestCase):
         self.assertTrue(
             context.get_discrete_state_vector() is
             context.get_mutable_discrete_state_vector())
-        self.assertEquals(context.get_num_abstract_states(), 1)
+        self.assertEqual(context.get_num_abstract_states(), 1)
         self.assertTrue(
             context.get_abstract_state() is
             context.get_mutable_abstract_state())
         self.assertTrue(
             context.get_abstract_state(0) is
             context.get_mutable_abstract_state(0))
-        self.assertEquals(
+        self.assertEqual(
             context.get_abstract_state(0).get_value(), model_value.get_value())
 
         # Check AbstractValues API.
         values = context.get_abstract_state()
-        self.assertEquals(values.size(), 1)
-        self.assertEquals(
+        self.assertEqual(values.size(), 1)
+        self.assertEqual(
             values.get_value(0).get_value(), model_value.get_value())
-        self.assertEquals(
+        self.assertEqual(
             values.get_mutable_value(0).get_value(), model_value.get_value())
         values.CopyFrom(values.Clone())
 
@@ -307,5 +317,45 @@ class TestCustom(unittest.TestCase):
             for index in range(4):
                 system = TrivialSystem(index)
                 context = system.CreateDefaultContext()
-                self.assertEquals(
+                self.assertEqual(
                     context.get_continuous_state_vector().size(), 6)
+
+    def test_abstract_io_port(self):
+        test = self
+        # N.B. Since this has trivial operations, we can test all scalar types.
+        for T in [float, AutoDiffXd, Expression]:
+            default_value = ("default", T(0.))
+            expected_input_value = ("input", T(np.pi))
+            expected_output_value = ("output", 2*T(np.pi))
+
+            class CustomAbstractSystem(LeafSystem_[T]):
+                def __init__(self):
+                    LeafSystem_[T].__init__(self)
+                    test_input_type = AbstractValue.Make(
+                        default_value)
+                    self.input_port = self._DeclareInputPort(
+                        PortDataType.kAbstractValued, 0)
+                    self.output_port = self._DeclareAbstractOutputPort(
+                        lambda: AbstractValue.Make(default_value),
+                        self._DoCalcAbstractOutput)
+
+                def _DoCalcAbstractOutput(self, context, y_data):
+                    input_value = self.EvalAbstractInput(
+                        context, 0).get_value()
+                    # The allocator function will populate the output with
+                    # the "input"
+                    test.assertTupleEqual(input_value, expected_input_value)
+                    y_data.set_value(expected_output_value)
+                    test.assertTupleEqual(y_data.get_value(),
+                                          expected_output_value)
+
+            system = CustomAbstractSystem()
+            context = system.CreateDefaultContext()
+
+            self.assertEqual(context.get_num_input_ports(), 1)
+            context.FixInputPort(0, AbstractValue.Make(expected_input_value))
+            output = system.AllocateOutput(context)
+            self.assertEqual(output.get_num_ports(), 1)
+            system.CalcOutput(context, output)
+            value = output.get_data(0)
+            self.assertEqual(value.get_value(), expected_output_value)

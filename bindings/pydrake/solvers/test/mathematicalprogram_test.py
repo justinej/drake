@@ -157,7 +157,27 @@ class TestMathematicalProgram(unittest.TestCase):
         # Test deprecated method.
         with warnings.catch_warnings(record=True) as w:
             c = binding.constraint()
-            self.assertEquals(len(w), 1)
+            self.assertEqual(len(w), 1)
+
+    def test_constraint_api(self):
+        prog = mp.MathematicalProgram()
+        x0, = prog.NewContinuousVariables(1, "x")
+        c = prog.AddLinearConstraint(x0 >= 2).evaluator()
+
+        def check_bounds(c, A, lb, ub):
+            self.assertTrue(np.allclose(c.A(), A))
+            self.assertTrue(np.allclose(c.lower_bound(), lb))
+            self.assertTrue(np.allclose(c.upper_bound(), ub))
+
+        check_bounds(c, [1.], [2.], [np.inf])
+        c.UpdateLowerBound([3.])
+        check_bounds(c, [1.], [3.], [np.inf])
+        c.UpdateUpperBound([4.])
+        check_bounds(c, [1.], [3.], [4.])
+        c.set_bounds([-10.], [10.])
+        check_bounds(c, [1.], [-10.], [10.])
+        c.UpdateCoefficients([10.], [-20.], [-30.])
+        check_bounds(c, [10.], [-20.], [-30.])
 
     def test_eval_binding(self):
         qp = TestQP()
@@ -288,7 +308,7 @@ class TestMathematicalProgram(unittest.TestCase):
         prog.AddCost(cost, x)
         prog.AddConstraint(constraint, [0.], [2.], x)
         prog.Solve()
-        self.assertAlmostEquals(prog.GetSolution(x)[0], 1.)
+        self.assertAlmostEqual(prog.GetSolution(x)[0], 1.)
 
     def test_addcost_symbolic(self):
         prog = mp.MathematicalProgram()
@@ -297,7 +317,7 @@ class TestMathematicalProgram(unittest.TestCase):
         prog.AddConstraint(0 <= x[0])
         prog.AddConstraint(x[0] <= 2)
         prog.Solve()
-        self.assertAlmostEquals(prog.GetSolution(x)[0], 1.)
+        self.assertAlmostEqual(prog.GetSolution(x)[0], 1.)
 
     def test_initial_guess(self):
         prog = mp.MathematicalProgram()
@@ -333,3 +353,22 @@ class TestMathematicalProgram(unittest.TestCase):
         # Test setting all values at once.
         prog.SetInitialGuessForAllVariables(x0)
         check_and_reset()
+
+    def test_lorentz_cone_constraint(self):
+        # Set Up Mathematical Program
+        prog = mp.MathematicalProgram()
+        x = prog.NewContinuousVariables(2, "x")
+        z = prog.NewContinuousVariables(1, "z")
+        prog.AddCost(z[0])
+
+        # Add LorentzConeConstraints
+        prog.AddLorentzConeConstraint(np.array([0*x[0]+1, x[0]-1, x[1]-1]))
+        prog.AddLorentzConeConstraint(np.array([z[0], x[0], x[1]]))
+
+        # Test result
+        result = prog.Solve()
+        self.assertEqual(result, mp.SolutionResult.kSolutionFound)
+
+        # Check answer
+        x_expected = np.array([1-2**(-0.5), 1-2**(-0.5)])
+        self.assertTrue(np.allclose(prog.GetSolution(x), x_expected))

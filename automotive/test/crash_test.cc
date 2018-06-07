@@ -27,9 +27,9 @@ class CrashTest2 : public TestWithParam< ::testing::tuple<double, double, double
  protected:
   virtual void SetUp() {
     v1 = ::testing::get<0>(GetParam());
-    v2 = ::testing::get<0>(GetParam());
-    accel = ::testing::get<0>(GetParam());
-    distance = ::testing::get<0>(GetParam());
+    v2 = ::testing::get<1>(GetParam());
+    accel = ::testing::get<2>(GetParam());
+    distance = ::testing::get<3>(GetParam());
   }
   virtual void TearDown() {}
   double v1;
@@ -95,7 +95,7 @@ TEST_P(CrashTest2, ReadsSimpleCarState) {
   
   const Isometry3<double>& pose_1 = poses.get_pose(kCar1Index);
   const Isometry3<double>& pose_2 = poses.get_pose(kCar2Index);
-
+  drake::log()->info("Hi {}", pose_2.translation().x());
   EXPECT_LT(pose_2.translation().x() + 5.0, pose_1.translation().x());
   // 5.0 is the length of the car
 }
@@ -115,7 +115,7 @@ INSTANTIATE_TEST_CASE_P(MeaningfulTestParameters,
                         CrashTest2,
                         Combine(Values(40),     // velocities for car 1
                                 Values(40),     // velocities for car 2
-                                Values(-20),   // acceleration of car 1
+                                Values(-5),   // acceleration of car 1
                                 Values(2)));     // distance between the cars
 
 #else

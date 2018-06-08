@@ -58,7 +58,7 @@ DEFINE_int32(num_maliput_railcar, 0, "Number of fixed-speed MaliputRailcar "
 DEFINE_double(target_realtime_rate, 1.0,
               "Playback speed.  See documentation for "
               "Simulator::set_target_realtime_rate() for details.");
-DEFINE_double(simulation_sec, std::numeric_limits<double>::infinity(),
+DEFINE_double(simulation_sec, 10.0,
               "Number of seconds to simulate.");
 
 DEFINE_int32(num_dragway_lanes, 1,
@@ -132,8 +132,6 @@ void AddMaliputRailcar(int num_cars, bool idm_controlled, int initial_s_offset,
     AutomotiveSimulator<double>* simulator) {
   for (int i = 0; i < num_cars; ++i) {
     const int lane_index = i % FLAGS_num_dragway_lanes;
-    // const double speed = FLAGS_dragway_base_speed +
-    //    lane_index * FLAGS_dragway_lane_speed_delta;
     const double speed = FLAGS_v2;
     const MaliputRailcarParams<double> params;
     const Lane* lane =
@@ -315,6 +313,15 @@ RoadNetworkType DetermineRoadNetworkType() {
   }
 }
 
+void printDistances(AutomotiveSimulator<double>* simulator) {
+  const systems::rendering::PoseBundle<double> poses =
+      simulator->GetCurrentPoses();
+  const Isometry3<double>& pose_1 = poses.get_pose(0);
+  const Isometry3<double>& pose_2 = poses.get_pose(1);
+  drake::log()->info("Pose 1 translation is {}", pose_1.translation().x());
+  drake::log()->info("Pose 2 translation is {}", pose_2.translation().x());
+}
+
 int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   logging::HandleSpdlogGflags();
@@ -328,6 +335,8 @@ int main(int argc, char* argv[]) {
   lcm->StartReceiveThread();
   simulator->Start(FLAGS_target_realtime_rate);
   simulator->StepBy(FLAGS_simulation_sec);
+  printDistances(simulator.get());
+  simulator->StepBy(std::numeric_limits<double>::infinity()); // So simulation keeps running
   return 0;
 }
 

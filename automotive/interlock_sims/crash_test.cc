@@ -1,5 +1,15 @@
-// Adapted from GTEST sample code by Vlad S.
+// Adapted by Justine Jang from GTEST sample code by Vlad S.
 // https://github.com/google/googletest/blob/master/googletest/samples/sample8_unittest.cc
+
+// Runs tests on simple scenario with two cars in one lane.
+// Car 1 (in front) travels at v1, brakes at time = 0 at a
+// de-acceleration of `accel`. Distance to car 2 (in back) is
+// `distance`. Test fails iff car 2 crashes into car 1 (as
+// measured by distance along axes of the two cars and the lane).
+//
+// Params (v1, v2, accel, distance) that fail are then saved
+// to a file (path should be modified to fit) which then can
+// be visualized by running `python visualize_surface.py`
 
 #include "drake/automotive/automotive_simulator.h"
 
@@ -13,6 +23,9 @@
 #include "drake/lcm/drake_mock_lcm.h"
 #include "drake/systems/rendering/pose_bundle.h"
 
+#include <iostream>
+#include <fstream>
+
 namespace drake {
 
 using maliput::api::Lane;
@@ -23,8 +36,26 @@ namespace {
 
 using ::testing::TestWithParam;
 using ::testing::Bool;
-using ::testing::Values;
+using ::testing::ValuesIn;
 using ::testing::Combine;
+
+const std::vector<double> Range(const double start, const double end, const double step = 1) {
+  std::vector<double> result;
+  for (double i = start; i < end; i += step) {
+    result.push_back(i);
+  } return result;
+}
+
+// only one value (v1, v2, accel, distance) = (13, 16, -8, 2) as example
+const std::vector<double> ALL_v1 = Range(13.0, 14.0, 1.0);      // car 1 velocities
+const std::vector<double> ALL_v2 = Range(16.0, 17.0, 1.0);      // car 2 velocities
+const std::vector<double> ALL_accel = Range(-8.0, -7.0, 1.0);   // acceleration of car 1 (front)
+const std::vector<double> ALL_distance = Range(2, 3, 1.0);      // distance between car 1 and car 2
+
+const int car_length = 5;
+
+// TODO: change to absolute path of the file you want to write to
+const std::string data_file_path = "/Users/justinej/Documents/drake/automotive/interlock_sims/data.txt";
 
 class CrashTest : public TestWithParam< ::testing::tuple<double, double, double, double> > {
  protected:
@@ -41,12 +72,25 @@ class CrashTest : public TestWithParam< ::testing::tuple<double, double, double,
   double distance;
 };
 
-// TEST_P(CrashTest, CorrectlyReadsParameters) {
-//     EXPECT_EQ(v1, 40);
-//     EXPECT_EQ(v2, 40);
-//     EXPECT_EQ(accel, -5);
-//     EXPECT_EQ(distance, 2);
-// }
+int ClearFile() {
+  std::ofstream myfile;
+  myfile.open(data_file_path, std::ofstream::out | std::ofstream::trunc);
+  myfile.close();
+  return 0;
+}
+
+
+std::string SaveParams(const double v1, const double v2,
+                        const double accel, const double distance) {
+  std::ofstream myfile;
+  myfile.open(data_file_path, std::ios::app);
+  std::string params = std::to_string(v1) + "," + std::to_string(v2) +
+                       "," + std::to_string(accel) + "," + std::to_string(distance);
+  myfile << params + "\n";
+  myfile.close();
+  // drake::log()->info("Params are " + params);
+  return ""; // "(" + params + ")";
+}
 
 const maliput::api::RoadGeometry* AddDragway(
     AutomotiveSimulator<double>* simulator) {
@@ -102,12 +146,15 @@ int AddIdmControlledMaliputRailcar(AutomotiveSimulator<double>* simulator,
 }
 
 void CompareDistances(const systems::rendering::PoseBundle<double>& poses,
-                       const int kCar1Index, const int kCar2Index) {
+                      const int kCar1Index, const int kCar2Index,
+                      const double v1, const double v2,
+                      const double accel, const double distance) {
   const Isometry3<double>& pose_1 = poses.get_pose(kCar1Index);
   const Isometry3<double>& pose_2 = poses.get_pose(kCar2Index);
-  drake::log()->info("Pose 1 translation x is {}", pose_1.translation().x());
-  drake::log()->info("Pose 2 translation x is {}", pose_2.translation().x());
-  EXPECT_LT(pose_2.translation().x() + 5.0, pose_1.translation().x());
+  // drake::log()->info("Pose 1 translation x is {}", pose_1.translation().x());
+  // drake::log()->info("Pose 2 translation x is {}", pose_2.translation().x());
+  EXPECT_LT(pose_2.translation().x() + car_length, pose_1.translation().x())
+    << SaveParams(v1, v2, accel, distance);
 }
 
 TEST_P(CrashTest, ReadsSimpleCarState) {
@@ -123,7 +170,7 @@ TEST_P(CrashTest, ReadsSimpleCarState) {
   const int car1_id = AddSimpleCar(simulator.get(), kX_car1, kVelocity_car1, kAcceleration_car1);
   const int car2_id = AddIdmControlledMaliputRailcar(simulator.get(), kVelocity_car2);
 
-  simulator->Start(100.0); // target_realtime_rate
+  simulator->Start(100.0); // speed up
   simulator->StepBy(10.0);
 
   const systems::rendering::PoseBundle<double> poses =
@@ -132,8 +179,8 @@ TEST_P(CrashTest, ReadsSimpleCarState) {
   ASSERT_EQ(poses.get_model_instance_id(kCar1Index), car1_id);
   ASSERT_EQ(poses.get_model_instance_id(kCar2Index), car2_id);
   
-  CompareDistances(poses, kCar1Index, kCar2Index);
-  // 5.0 is the length of the car
+  CompareDistances(poses, kCar1Index, kCar2Index,
+                   kVelocity_car1, kVelocity_car2, kAcceleration_car1, kX_car1);
 }
 
 // In order to run value-parameterized tests, you need to instantiate them,
@@ -147,12 +194,14 @@ TEST_P(CrashTest, ReadsSimpleCarState) {
 // will put some of the tested numbers beyond the capability of the
 // PrecalcPrimeTable instance and some inside it (10). Combine will produce all
 // possible combinations.
+
+int cleared = ClearFile();
 INSTANTIATE_TEST_CASE_P(MeaningfulTestParameters,
                         CrashTest,
-                        Combine(Values(50),     // velocities for car 1
-                                Values(50),     // velocities for car 2
-                                Values(-10),     // acceleration of car 1
-                                Values(50)));     // distance between the cars
+                        Combine(ValuesIn(ALL_v1),
+                                ValuesIn(ALL_v2),
+                                ValuesIn(ALL_accel),
+                                ValuesIn(ALL_distance)));
 
 #else
 

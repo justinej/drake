@@ -34,7 +34,7 @@ element {
     name: "max_acceleration"
     doc: "The limit on the car's acceleration and deceleration."
     doc_units: "m/s^2"
-    default_value: "4.0"
+    default_value: "10.0"
     min_value: "0.0"
 }
 element {

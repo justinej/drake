@@ -660,6 +660,7 @@ drake_cc_googletest(
     data = ["//automotive/models:prod_models"],
     # Flaky because LCM self-test can fail (PR #7311)
     flaky = 1,
+    srcs = ["interlock_sims/crash_test.cc"],
     deps = [
         "//automotive:automotive_simulator",
         "//automotive:create_trajectory_params",

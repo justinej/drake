@@ -70,6 +70,8 @@ class TestAll(unittest.TestCase):
             "jacobian",
             "sin",
             "cos",
+            # lcm
+            "DrakeLcm",
             # symbolic
             "Variable",
             "Expression",
@@ -78,6 +80,9 @@ class TestAll(unittest.TestCase):
             "RoadGeometry",
             # - dragway
             "create_dragway",
+            # manipulation
+            # - planner
+            "DoDifferentialInverseKinematics",
             # multibody
             # - parsers
             "PackageMap",

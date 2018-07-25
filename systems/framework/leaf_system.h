@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -14,7 +15,6 @@
 #include "drake/common/drake_assert.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/common/drake_deprecated.h"
-#include "drake/common/drake_optional.h"
 #include "drake/common/eigen_types.h"
 #include "drake/common/number_traits.h"
 #include "drake/common/pointer_cast.h"
@@ -26,9 +26,9 @@
 #include "drake/systems/framework/leaf_context.h"
 #include "drake/systems/framework/leaf_output_port.h"
 #include "drake/systems/framework/model_values.h"
-#include "drake/systems/framework/output_port_value.h"
 #include "drake/systems/framework/system.h"
 #include "drake/systems/framework/system_constraint.h"
+#include "drake/systems/framework/system_output.h"
 #include "drake/systems/framework/system_scalar_converter.h"
 #include "drake/systems/framework/system_symbolic_inspector.h"
 #include "drake/systems/framework/value.h"
@@ -126,54 +126,56 @@ class LeafSystem : public System<T> {
   }
   /// @endcond
 
-  std::unique_ptr<ContextBase> DoMakeContext() const final {
+  std::unique_ptr<ContextBase> DoAllocateContext() const final {
     std::unique_ptr<LeafContext<T>> context = DoMakeLeafContext();
-    // Reserve continuous state via delegation to subclass.
-    context->set_continuous_state(this->AllocateContinuousState());
-    // Reserve discrete state via delegation to subclass.
-    context->set_discrete_state(this->AllocateDiscreteState());
-    context->set_abstract_state(this->AllocateAbstractState());
+    this->InitializeContextBase(&*context);
+
     // Reserve parameters via delegation to subclass.
-    context->set_parameters(this->AllocateParameters());
+    context->init_parameters(this->AllocateParameters());
 
-    // Note that the outputs are not part of the Context, but instead are
-    // checked by LeafSystemOutput::add_port.
+    // Reserve state via delegation to subclass.
+    context->init_continuous_state(this->AllocateContinuousState());
+    context->init_discrete_state(this->AllocateDiscreteState());
+    context->init_abstract_state(this->AllocateAbstractState());
 
-    return context;
-  }
+    // At this point this LeafContext is complete except possibly for
+    // inter-Context dependencies involving port connections to peers or
+    // parent. We can now perform some final sanity checks.
 
-  // Enforce some requirements on the fully-assembled Context.
-  // -- The continuous state must be contiguous, i.e., a valid BasicVector.
-  //    (In general, a System's Context's continuous state can be any kind of
-  //    VectorBase including scatter-gather implementations like Supervector.
-  //    But for a LeafSystem with LeafContext, we only allow BasicVectors,
-  //    which are guaranteed to have a linear storage layout.)  If the xc is
-  //    not BasicVector, the dynamic_cast will yield nullptr, and the
-  //    invariant-checker will complain.
-  void DoValidateAllocatedContext(const ContextBase& context_base) const final {
-    auto& context = dynamic_cast<const LeafContext<T>&>(context_base);
-    const VectorBase<T>* const xc = &context.get_continuous_state_vector();
+    // The numeric vectors used for parameters and state must be contiguous,
+    // i.e., valid BasicVectors. In general, a Context's numeric vectors can be
+    // any kind of VectorBase including scatter-gather implementations like
+    // Supervector. But for a LeafContext, we only allow BasicVectors, which are
+    // guaranteed to have a contiguous storage layout.
+
+    // If xc is not BasicVector, the dynamic_cast will yield nullptr, and the
+    // invariant-checker will complain.
+    const VectorBase<T>* const xc = &context->get_continuous_state_vector();
     detail::CheckBasicVectorInvariants(dynamic_cast<const BasicVector<T>*>(xc));
-    // -- The discrete state must all be valid BasicVectors.
+
+    // The discrete state must all be valid BasicVectors.
     for (const BasicVector<T>* group :
-        context.get_state().get_discrete_state().get_data()) {
+        context->get_state().get_discrete_state().get_data()) {
       detail::CheckBasicVectorInvariants(group);
     }
-    // -- The numeric parameters must all be valid BasicVectors.
-    const int num_numeric_parameters = context.num_numeric_parameters();
+
+    // The numeric parameters must all be valid BasicVectors.
+    const int num_numeric_parameters = context->num_numeric_parameters();
     for (int i = 0; i < num_numeric_parameters; ++i) {
-      const BasicVector<T>& group = context.get_numeric_parameter(i);
+      const BasicVector<T>& group = context->get_numeric_parameter(i);
       detail::CheckBasicVectorInvariants(&group);
     }
 
     // Allow derived LeafSystem to validate allocated Context.
-    DoValidateAllocatedLeafContext(context);
+    DoValidateAllocatedLeafContext(*context);
+
+    return context;
   }
 
   /// Default implementation: sets all continuous state to the model vector
   /// given in DeclareContinuousState (or zero if no model vector was given) and
-  /// discrete states to zero.  This method makes no attempt to set abstract
-  /// state values.  Overrides must not change the number of state variables.
+  /// discrete states to zero. Overrides must not change the number of state
+  /// variables.
   // TODO(sherm/russt): Initialize the discrete state from the model vector
   // pending resolution of #7058.
   void SetDefaultState(const Context<T>& context,
@@ -191,6 +193,8 @@ class LeafSystem : public System<T> {
       BasicVector<T>& s = xd.get_mutable_vector(i);
       s.SetFromVector(VectorX<T>::Zero(s.size()));
     }
+    AbstractValues& xa = state->get_mutable_abstract_state();
+    xa.CopyFrom(AbstractValues(model_abstract_states_.CloneAllModels()));
   }
 
   /// Default implementation: sets all numeric parameters to the model vector
@@ -215,16 +219,6 @@ class LeafSystem : public System<T> {
       auto model_value = model_abstract_parameters_.CloneModel(i);
       p.SetFrom(*model_value);
     }
-  }
-
-  std::unique_ptr<SystemOutput<T>> AllocateOutput(
-      const Context<T>&) const final {
-    std::unique_ptr<LeafSystemOutput<T>> output(new LeafSystemOutput<T>);
-    for (int i = 0; i < this->get_num_output_ports(); ++i) {
-      const OutputPort<T>& port = this->get_output_port(i);
-      output->add_port(std::make_unique<OutputPortValue>(port.Allocate()));
-    }
-    return std::move(output);
   }
 
   /// Returns the AllocateContinuousState value, which must not be nullptr.
@@ -280,6 +274,9 @@ class LeafSystem : public System<T> {
   };
 
  protected:
+  // Promote so we don't need "this->" in defaults which show up in Doxygen.
+  using SystemBase::all_sources_ticket;
+
   /// Default constructor that declares no inputs, outputs, state, parameters,
   /// events, nor scalar-type conversion support (AutoDiff, etc.).  To enable
   /// AutoDiff support, use the SystemScalarConverter-based constructor.
@@ -319,8 +316,11 @@ class LeafSystem : public System<T> {
 
   /// Derived classes that impose restrictions on what resources are permitted
   /// should check those restrictions by implementing this. For example, a
-  /// derived class might require a single input and single output. The default
-  /// implementation does nothing.
+  /// derived class might require a single input and single output. Note that
+  /// the supplied Context will be complete except that input and output
+  /// dependencies on peer and parent subcontexts will not yet have been set up,
+  /// so you may not consider them for validation.
+  /// The default implementation does nothing.
   virtual void DoValidateAllocatedLeafContext(
       const LeafContext<T>& context) const {
     unused(context);
@@ -362,32 +362,32 @@ class LeafSystem : public System<T> {
     DoCalcNextUpdateTimeImpl(context, events, time);
   }
 
-  /// Allocates a vector that is suitable as an input value for @p descriptor.
+  /// Allocates a vector that is suitable as an input value for @p input_port.
   /// The default implementation in this class either clones the model_vector
   /// (if the port was declared via DeclareVectorInputPort) or else allocates a
   /// BasicVector (if the port was declared via DeclareInputPort(kVectorValued,
   /// size).  Subclasses can override this method if the default behavior is
   /// not sufficient.
   BasicVector<T>* DoAllocateInputVector(
-      const InputPortDescriptor<T>& descriptor) const override {
+      const InputPort<T>& input_port) const override {
     std::unique_ptr<BasicVector<T>> model_result =
-        model_input_values_.CloneVectorModel<T>(descriptor.get_index());
+        model_input_values_.CloneVectorModel<T>(input_port.get_index());
     if (model_result) {
       return model_result.release();
     }
-    return new BasicVector<T>(descriptor.size());
+    return new BasicVector<T>(input_port.size());
   }
 
-  /// Allocates an AbstractValue suitable as an input value for @p descriptor.
+  /// Allocates an AbstractValue suitable as an input value for @p input_port.
   /// The default implementation in this class either clones the model_value
   /// (if the port was declared via DeclareAbstractInputPort) or else aborts.
   ///
   /// Subclasses with abstract input ports must either provide a model_value
   /// when declaring the port, or else override this method.
   AbstractValue* DoAllocateInputAbstract(
-      const InputPortDescriptor<T>& descriptor) const override {
+      const InputPort<T>& input_port) const override {
     std::unique_ptr<AbstractValue> model_result =
-        model_input_values_.CloneModel(descriptor.get_index());
+        model_input_values_.CloneModel(input_port.get_index());
     if (model_result) {
       return model_result.release();
     }
@@ -444,7 +444,7 @@ class LeafSystem : public System<T> {
     *dot << "}\"];" << std::endl;
   }
 
-  void GetGraphvizInputPortToken(const InputPortDescriptor<T>& port,
+  void GetGraphvizInputPortToken(const InputPort<T>& port,
                                  std::stringstream *dot) const final {
     DRAKE_DEMAND(port.get_system() == this);
     *dot << this->GetGraphvizId() << ":u" << port.get_index();
@@ -561,7 +561,7 @@ class LeafSystem : public System<T> {
   /// re-declared as inequality constraints on this system (see
   /// DeclareInequalityConstraint()).  Returns the index of the new parameter.
   int DeclareNumericParameter(const BasicVector<T>& model_vector) {
-    const int index = model_numeric_parameters_.size();
+    const NumericParameterIndex index(model_numeric_parameters_.size());
     model_numeric_parameters_.AddVectorModel(index, model_vector.Clone());
     MaybeDeclareVectorBaseInequalityConstraint(
         "parameter " + std::to_string(index), model_vector,
@@ -569,6 +569,7 @@ class LeafSystem : public System<T> {
           const BasicVector<T>& result = context.get_numeric_parameter(index);
           return result;
         });
+    this->AddNumericParameter(index);
     return index;
   }
 
@@ -608,8 +609,9 @@ class LeafSystem : public System<T> {
   /// the default implementation of SetDefaultParameters() will reset parameters
   /// to their model values.  Returns the index of the new parameter.
   int DeclareAbstractParameter(const AbstractValue& model_value) {
-    const int index = model_abstract_parameters_.size();
+    const AbstractParameterIndex index(model_abstract_parameters_.size());
     model_abstract_parameters_.AddModel(index, model_value.Clone());
+    this->AddAbstractParameter(index);
     return index;
   }
 
@@ -774,17 +776,22 @@ class LeafSystem : public System<T> {
   /// Declares that this System should reserve discrete state with
   /// @p num_state_variables state variables. Has no effect if
   /// AllocateDiscreteState is overridden.
+  // TODO(sherm1) Repeated calls to this should allocate additional discrete
+  // state groups. Currently there is only one.
   void DeclareDiscreteState(int num_state_variables) {
+    const DiscreteStateIndex index(0);  // Only one implemented currently.
     model_discrete_state_vector_ =
         std::make_unique<BasicVector<T>>(num_state_variables);
+    this->AddDiscreteStateGroup(index);
   }
 
   /// Declares an abstract state.
   /// @param abstract_state The abstract state, its ownership is transferred.
   /// @return index of the declared abstract state.
   int DeclareAbstractState(std::unique_ptr<AbstractValue> abstract_state) {
-    int index = model_abstract_states_.size();
+    const AbstractStateIndex index(model_abstract_states_.size());
     model_abstract_states_.AddModel(index, std::move(abstract_state));
+    this->AddAbstractState(index);
     return index;
   }
 
@@ -804,7 +811,7 @@ class LeafSystem : public System<T> {
   /// VectorBase::CalcInequalityConstraint() constraints, they will be
   /// re-declared as inequality constraints on this system (see
   /// DeclareInequalityConstraint()).
-  const InputPortDescriptor<T>& DeclareVectorInputPort(
+  const InputPort<T>& DeclareVectorInputPort(
       const BasicVector<T>& model_vector,
       optional<RandomDistribution> random_type = nullopt) {
     const int size = model_vector.size();
@@ -827,7 +834,7 @@ class LeafSystem : public System<T> {
   /// This is the best way to declare LeafSystem abstract input ports.
   /// LeafSystem's default implementation of DoAllocateInputAbstract will be
   /// model_value.Clone().
-  const InputPortDescriptor<T>& DeclareAbstractInputPort(
+  const InputPort<T>& DeclareAbstractInputPort(
       const AbstractValue& model_value) {
     const int next_index = this->get_num_input_ports();
     model_input_values_.AddModel(next_index, model_value.Clone());
@@ -1016,6 +1023,12 @@ class LeafSystem : public System<T> {
   /// methods below that are not given an explicit model value or construction
   /// ("make") method, the underlying type must be default constructible.
   /// @see drake::systems::Value for more about abstract values.
+  ///
+  /// A list of prerequisites may be provided for the calculator function to
+  /// avoid unnecessary recomputation. If no prerequisites are provided, the
+  /// default is to assume the output port value is dependent on all possible
+  /// sources. See @ref DeclareCacheEntry_documentation "DeclareCacheEntry"
+  /// for more information about prerequisites.
   //@{
 
   /// Declares a vector-valued output port by specifying (1) a model vector of
@@ -1031,7 +1044,9 @@ class LeafSystem : public System<T> {
   template <class MySystem, typename BasicVectorSubtype>
   const OutputPort<T>& DeclareVectorOutputPort(
       const BasicVectorSubtype& model_vector,
-      void (MySystem::*calc)(const Context<T>&, BasicVectorSubtype*) const) {
+      void (MySystem::*calc)(const Context<T>&, BasicVectorSubtype*) const,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
     static_assert(std::is_base_of<LeafSystem<T>, MySystem>::value,
                   "Expected to be invoked from a LeafSystem-derived System.");
     static_assert(std::is_base_of<BasicVector<T>, BasicVectorSubtype>::value,
@@ -1053,7 +1068,7 @@ class LeafSystem : public System<T> {
           auto typed_result = dynamic_cast<BasicVectorSubtype*>(result);
           DRAKE_DEMAND(typed_result != nullptr);
           (this_ptr->*calc)(context, typed_result);
-        });
+        }, std::move(prerequisites_of_calc));
     MaybeDeclareVectorBaseInequalityConstraint(
         "output " + std::to_string(int{port.get_index()}), model_vector,
         [&port, storage = std::shared_ptr<AbstractValue>{}](
@@ -1091,13 +1106,16 @@ class LeafSystem : public System<T> {
   /// the `BasicVectorSubtype` default constructor.
   template <class MySystem, typename BasicVectorSubtype>
   const OutputPort<T>& DeclareVectorOutputPort(
-      void (MySystem::*calc)(const Context<T>&, BasicVectorSubtype*) const) {
+      void (MySystem::*calc)(const Context<T>&, BasicVectorSubtype*) const,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
     static_assert(
         std::is_default_constructible<BasicVectorSubtype>::value,
         "LeafSystem::DeclareVectorOutputPort(calc): the one-argument form of "
         "this method requires that the output type has a default constructor");
     // Invokes the previous method.
-    return DeclareVectorOutputPort(BasicVectorSubtype{}, calc);
+    return DeclareVectorOutputPort(BasicVectorSubtype{}, calc,
+                                   std::move(prerequisites_of_calc));
   }
 
   /// (Advanced) Declares a vector-valued output port using the given
@@ -1109,10 +1127,12 @@ class LeafSystem : public System<T> {
   /// @see LeafOutputPort::CalcVectorCallback
   const OutputPort<T>& DeclareVectorOutputPort(
       const BasicVector<T>& model_vector,
-      typename LeafOutputPort<T>::CalcVectorCallback vector_calc_function) {
-    auto& port = CreateVectorLeafOutputPort(model_vector.size(),
-                                            MakeAllocCallback(model_vector),
-                                            vector_calc_function);
+      typename LeafOutputPort<T>::CalcVectorCallback vector_calc_function,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
+    auto& port = CreateVectorLeafOutputPort(
+        model_vector.size(), MakeAllocCallback(model_vector),
+        vector_calc_function, std::move(prerequisites_of_calc));
     return port;
   }
 
@@ -1129,7 +1149,9 @@ class LeafSystem : public System<T> {
   template <class MySystem, typename OutputType>
   const OutputPort<T>& DeclareAbstractOutputPort(
       const OutputType& model_value,
-      void (MySystem::*calc)(const Context<T>&, OutputType*) const) {
+      void (MySystem::*calc)(const Context<T>&, OutputType*) const,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
     auto this_ptr = dynamic_cast<const MySystem*>(this);
     DRAKE_DEMAND(this_ptr != nullptr);
     auto& port = CreateAbstractLeafOutputPort(
@@ -1137,7 +1159,7 @@ class LeafSystem : public System<T> {
         [this_ptr, calc](const Context<T>& context, AbstractValue* result) {
           OutputType& typed_result = result->GetMutableValue<OutputType>();
           (this_ptr->*calc)(context, &typed_result);
-        });
+        }, std::move(prerequisites_of_calc));
     return port;
   }
 
@@ -1162,13 +1184,16 @@ class LeafSystem : public System<T> {
   /// @see drake::systems::Value
   template <class MySystem, typename OutputType>
   const OutputPort<T>& DeclareAbstractOutputPort(
-      void (MySystem::*calc)(const Context<T>&, OutputType*) const) {
+      void (MySystem::*calc)(const Context<T>&, OutputType*) const,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
     static_assert(
         std::is_default_constructible<OutputType>::value,
         "LeafSystem::DeclareAbstractOutputPort(calc): the one-argument form of "
         "this method requires that the output type has a default constructor");
     // Note that value initialization {} is required here.
-    return DeclareAbstractOutputPort(OutputType{}, calc);
+    return DeclareAbstractOutputPort(OutputType{}, calc,
+                                     std::move(prerequisites_of_calc));
   }
 
   /// Declares an abstract-valued output port by specifying member functions to
@@ -1185,7 +1210,9 @@ class LeafSystem : public System<T> {
   template <class MySystem, typename OutputType>
   const OutputPort<T>& DeclareAbstractOutputPort(
       OutputType (MySystem::*make)() const,
-      void (MySystem::*calc)(const Context<T>&, OutputType*) const) {
+      void (MySystem::*calc)(const Context<T>&, OutputType*) const,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
     auto this_ptr = dynamic_cast<const MySystem*>(this);
     DRAKE_DEMAND(this_ptr != nullptr);
     auto& port = CreateAbstractLeafOutputPort(
@@ -1195,7 +1222,7 @@ class LeafSystem : public System<T> {
         [this_ptr, calc](const Context<T>& context, AbstractValue* result) {
           OutputType& typed_result = result->GetMutableValue<OutputType>();
           (this_ptr->*calc)(context, &typed_result);
-        });
+        }, std::move(prerequisites_of_calc));
     return port;
   }
 
@@ -1205,8 +1232,11 @@ class LeafSystem : public System<T> {
   /// @see LeafOutputPort::AllocCallback, LeafOutputPort::CalcCallback
   const OutputPort<T>& DeclareAbstractOutputPort(
       typename LeafOutputPort<T>::AllocCallback alloc_function,
-      typename LeafOutputPort<T>::CalcCallback calc_function) {
-    auto& port = CreateAbstractLeafOutputPort(alloc_function, calc_function);
+      typename LeafOutputPort<T>::CalcCallback calc_function,
+      std::set<DependencyTicket> prerequisites_of_calc = {
+          all_sources_ticket()}) {
+    auto& port = CreateAbstractLeafOutputPort(alloc_function, calc_function,
+                                              std::move(prerequisites_of_calc));
     return port;
   }
   //@}
@@ -1545,30 +1575,88 @@ class LeafSystem : public System<T> {
     }
   }
 
-  // Creates a new vector-valued LeafOutputPort in this LeafSystem and returns
-  // a reference to it.
+  // Creates a new cached, vector-valued LeafOutputPort in this LeafSystem and
+  // returns a reference to it.
   LeafOutputPort<T>& CreateVectorLeafOutputPort(
       int fixed_size,
       typename LeafOutputPort<T>::AllocCallback vector_allocator,
-      typename LeafOutputPort<T>::CalcVectorCallback vector_calculator) {
-    auto port = std::make_unique<LeafOutputPort<T>>(
-        *this, *this, OutputPortIndex(this->get_num_output_ports()),
-        fixed_size, vector_allocator, vector_calculator);
-    LeafOutputPort<T>* const port_ptr = port.get();
-    this->CreateOutputPort(std::move(port));
-    return *port_ptr;
+      typename LeafOutputPort<T>::CalcVectorCallback vector_calculator,
+      std::set<DependencyTicket> calc_prerequisites) {
+    // Construct a suitable type-erased cache calculator from the given
+    // BasicVector<T> calculator function.
+    auto cache_calc_function = [vector_calculator](
+        const ContextBase& context_base, AbstractValue* abstract) {
+      auto& context = dynamic_cast<const Context<T>&>(context_base);
+
+      // The abstract value must be a Value<BasicVector<T>>, even if the
+      // underlying object is a more-derived vector type.
+      auto value = dynamic_cast<Value<BasicVector<T>>*>(abstract);
+
+      // TODO(sherm1) Make this error message more informative by capturing
+      // system and port index info.
+      if (value == nullptr) {
+        throw std::logic_error(fmt::format(
+            "An output port calculation required a {} object for its result "
+            "but got a {} object instead.",
+            NiceTypeName::Get<Value<BasicVector<T>>>(),
+            abstract->GetNiceTypeName()));
+      }
+      vector_calculator(context, &value->get_mutable_value());
+    };
+
+    // The allocator function is identical between output port and cache.
+    return CreateCachedLeafOutputPort(fixed_size, std::move(vector_allocator),
+                                      std::move(cache_calc_function),
+                                      std::move(calc_prerequisites));
   }
 
-  // Creates a new abstract-valued LeafOutputPort in this LeafSystem and returns
-  // a reference to it.
+  // Creates a new cached, abstract-valued LeafOutputPort in this LeafSystem and
+  // returns a reference to it.
   LeafOutputPort<T>& CreateAbstractLeafOutputPort(
       typename LeafOutputPort<T>::AllocCallback allocator,
-      typename LeafOutputPort<T>::CalcCallback calculator) {
+      typename LeafOutputPort<T>::CalcCallback calculator,
+      std::set<DependencyTicket> calc_prerequisites) {
+    // Construct a suitable type-erased cache calculator from the given
+    // type-T calculator function.
+    auto cache_calc_function = [calculator](
+        const ContextBase& context_base, AbstractValue* result) {
+      const Context<T>& context = dynamic_cast<const Context<T>&>(context_base);
+      return calculator(context, result);
+    };
+
+    return CreateCachedLeafOutputPort(0 /* size */, std::move(allocator),
+                                      std::move(cache_calc_function),
+                                      std::move(calc_prerequisites));
+  }
+
+  // Creates a new cached LeafOutputPort in this LeafSystem and returns a
+  // reference to it. Pass fixed_size == 0 for abstract ports, or non-zero
+  // for vector ports. Prerequisites list must not be empty.
+  LeafOutputPort<T>& CreateCachedLeafOutputPort(
+      int fixed_size,
+      typename CacheEntry::AllocCallback allocator,
+      typename CacheEntry::CalcCallback calculator,
+      std::set<DependencyTicket> calc_prerequisites) {
+    DRAKE_DEMAND(!calc_prerequisites.empty());
+    // Create a cache entry for this output port.
+    const OutputPortIndex oport_index(this->get_num_output_ports());
+    const CacheEntry& cache_entry = this->DeclareCacheEntry(
+        "output port " + std::to_string(oport_index) + " cache",
+        std::move(allocator), std::move(calculator),
+        std::move(calc_prerequisites));
+
+    // Create and install the port. Note that it has a separate ticket from
+    // the cache entry; the port's tracker will be subscribed to the cache
+    // entry's tracker when a Context is created.
+    // TODO(sherm1) Use implicit_cast when available (from abseil).
     auto port = std::make_unique<LeafOutputPort<T>>(
-        *this, *this, OutputPortIndex(this->get_num_output_ports()),
-        allocator, calculator);
+        this,  // implicit_cast<const System<T>*>(this)
+        this,  // implicit_cast<const SystemBase*>(this)
+        oport_index, this->assign_next_dependency_ticket(),
+        fixed_size == 0 ? kAbstractValued : kVectorValued, fixed_size,
+        &cache_entry);
     LeafOutputPort<T>* const port_ptr = port.get();
-    this->CreateOutputPort(std::move(port));
+    this->AddOutputPort(std::move(port));
     return *port_ptr;
   }
 

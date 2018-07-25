@@ -467,7 +467,7 @@ class DiagramTest : public ::testing::Test {
     diagram_->set_name("Unicode Snowman's Favorite Diagram!!1!☃!");
 
     context_ = diagram_->CreateDefaultContext();
-    output_ = diagram_->AllocateOutput(*context_);
+    output_ = diagram_->AllocateOutput();
 
     // Initialize the integrator states.
     auto& integrator0_xc = GetMutableContinuousState(integrator0());
@@ -560,10 +560,10 @@ TEST_F(DiagramTest, Witness) {
 TEST_F(DiagramTest, Topology) {
   ASSERT_EQ(kSize, diagram_->get_num_input_ports());
   for (int i = 0; i < kSize; ++i) {
-    const auto& descriptor = diagram_->get_input_port(i);
-    EXPECT_EQ(diagram_.get(), descriptor.get_system());
-    EXPECT_EQ(kVectorValued, descriptor.get_data_type());
-    EXPECT_EQ(kSize, descriptor.size());
+    const auto& input_port = diagram_->get_input_port(i);
+    EXPECT_EQ(diagram_.get(), input_port.get_system());
+    EXPECT_EQ(kVectorValued, input_port.get_data_type());
+    EXPECT_EQ(kSize, input_port.size());
   }
 
   ASSERT_EQ(kSize, diagram_->get_num_output_ports());
@@ -586,6 +586,55 @@ TEST_F(DiagramTest, Topology) {
     EXPECT_TRUE(diagram_->HasDirectFeedthrough(i, 1));
     EXPECT_FALSE(diagram_->HasDirectFeedthrough(i, 2));
   }
+}
+
+// Tests that dependency wiring is set up correctly between
+//  1. input ports and their source output ports,
+//  2. diagram output ports and their source leaf output ports, and
+//  3. diagram input ports and the corresponding exported leaf inputs.
+TEST_F(DiagramTest, CheckPortSubscriptions) {
+  const Context<double>& adder1_subcontext =
+      diagram_->GetSubsystemContext(*diagram_->adder1(), *context_);
+  const OutputPortBase& adder1_oport0 =
+      diagram_->adder1()->get_output_port_base(OutputPortIndex(0));
+  const DependencyTracker& adder1_oport0_tracker =
+      adder1_subcontext.get_tracker(adder1_oport0.ticket());
+  const Context<double>& adder2_subcontext =
+      diagram_->GetSubsystemContext(*diagram_->adder2(), *context_);
+  const InputPortBase& adder2_iport1 =
+      diagram_->adder2()->get_input_port_base(InputPortIndex(1));
+  const DependencyTracker& adder2_iport1_tracker =
+      adder2_subcontext.get_tracker(adder2_iport1.ticket());
+
+  // 1. Adder2's input port 1 depends on adder1's output port 0.
+  EXPECT_TRUE(adder1_oport0_tracker.HasSubscriber(adder2_iport1_tracker));
+  EXPECT_TRUE(adder2_iport1_tracker.HasPrerequisite(adder1_oport0_tracker));
+
+  const OutputPortBase& diagram_oport1 =
+      diagram_->get_output_port_base(OutputPortIndex(1));
+  const DependencyTracker& diagram_oport1_tracker =
+      context_->get_tracker(diagram_oport1.ticket());
+  const OutputPortBase& adder2_oport0 =
+      diagram_->adder2()->get_output_port_base(OutputPortIndex(0));
+  const DependencyTracker& adder2_oport0_tracker =
+      adder2_subcontext.get_tracker(adder2_oport0.ticket());
+
+  // 2. Diagram's output port 1 is exported from adder2's output port 0.
+  EXPECT_TRUE(adder2_oport0_tracker.HasSubscriber(diagram_oport1_tracker));
+  EXPECT_TRUE(diagram_oport1_tracker.HasPrerequisite(adder2_oport0_tracker));
+
+  const InputPortBase& diagram_iport2 =
+      diagram_->get_input_port_base(InputPortIndex(2));
+  const DependencyTracker& diagram_iport2_tracker =
+      context_->get_tracker(diagram_iport2.ticket());
+  const InputPortBase& adder1_iport1 =
+      diagram_->adder1()->get_input_port_base(InputPortIndex(1));
+  const DependencyTracker& adder1_iport1_tracker =
+      adder1_subcontext.get_tracker(adder1_iport1.ticket());
+
+  // 3. Diagram's input port 2 is imported to adder1's input port 1.
+  EXPECT_TRUE(diagram_iport2_tracker.HasSubscriber(adder1_iport1_tracker));
+  EXPECT_TRUE(adder1_iport1_tracker.HasPrerequisite(diagram_iport2_tracker));
 }
 
 TEST_F(DiagramTest, Path) {
@@ -654,6 +703,24 @@ TEST_F(DiagramTest, CalcOutput) {
   ExpectDefaultOutputs();
 }
 
+// Tests that Diagram output ports are built with the right prerequisites
+// and that Eval caches as expected.
+TEST_F(DiagramTest, EvalOutput) {
+  AttachInputs();
+
+  // Sanity check output port prerequisites. Diagram ports should designate
+  // a subsystem since they are resolved internally. We don't know the right
+  // dependency ticket, but at least it should be valid.
+  ASSERT_EQ(diagram_->get_num_output_ports(), 3);
+  const int expected_subsystem[] = {1, 2, 5};  // From drawing above.
+  for (OutputPortIndex i(0); i < diagram_->get_num_output_ports(); ++i) {
+    internal::OutputPortPrerequisite prereq =
+        diagram_->get_output_port(i).GetPrerequisite();
+    EXPECT_EQ(*prereq.child_subsystem, expected_subsystem[i]);
+    EXPECT_TRUE(prereq.dependency.is_valid());
+  }
+}
+
 TEST_F(DiagramTest, CalcTimeDerivatives) {
   AttachInputs();
   std::unique_ptr<ContinuousState<double>> derivatives =
@@ -703,6 +770,38 @@ TEST_F(DiagramTest, AllocateInputs) {
   }
 }
 
+// Tests that ContextBase methods for affecting cache behavior propagate
+// through to subcontexts. Since leaf output ports have cache entries in their
+// corresponding subcontext, we'll pick one and check its behavior.
+TEST_F(DiagramTest, CachingChangePropagation) {
+  AttachInputs();  // So we can Eval() below.
+  const Context<double>& adder1_subcontext =
+      diagram_->GetSubsystemContext(*diagram_->adder1(), *context_);
+  const OutputPort<double>& adder1_output =
+      diagram_->adder1()->get_output_port();
+  auto& adder1_leaf_output =
+      dynamic_cast<const LeafOutputPort<double>&>(adder1_output);
+
+  auto& cache_entry = adder1_leaf_output.cache_entry();
+  EXPECT_FALSE(cache_entry.is_cache_entry_disabled(adder1_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(adder1_subcontext));
+
+  context_->DisableCaching();
+  EXPECT_TRUE(cache_entry.is_cache_entry_disabled(adder1_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(adder1_subcontext));
+
+  context_->EnableCaching();
+  EXPECT_FALSE(cache_entry.is_cache_entry_disabled(adder1_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(adder1_subcontext));
+
+  // Bring the cache entry up to date.
+  cache_entry.EvalAbstract(adder1_subcontext);
+  EXPECT_FALSE(cache_entry.is_out_of_date(adder1_subcontext));
+
+  context_->SetAllCacheEntriesOutOfDate();
+  EXPECT_TRUE(cache_entry.is_out_of_date(adder1_subcontext));
+}
+
 // Tests that a diagram can be transmogrified to AutoDiffXd.
 TEST_F(DiagramTest, ToAutoDiffXd) {
   std::unique_ptr<System<AutoDiffXd>> ad_diagram =
@@ -710,7 +809,7 @@ TEST_F(DiagramTest, ToAutoDiffXd) {
   std::unique_ptr<Context<AutoDiffXd>> context =
       ad_diagram->CreateDefaultContext();
   std::unique_ptr<SystemOutput<AutoDiffXd>> output =
-      ad_diagram->AllocateOutput(*context);
+      ad_diagram->AllocateOutput();
 
   // The name was preserved.
   EXPECT_EQ(diagram_->get_name(), ad_diagram->get_name());
@@ -864,7 +963,7 @@ class DiagramOfDiagramsTest : public ::testing::Test {
     diagram_->set_name("DiagramOfDiagrams");
 
     context_ = diagram_->CreateDefaultContext();
-    output_ = diagram_->AllocateOutput(*context_);
+    output_ = diagram_->AllocateOutput();
 
     context_->FixInputPort(0, {8});
     context_->FixInputPort(1, {64});
@@ -977,7 +1076,7 @@ class AddConstantDiagram : public Diagram<double> {
 GTEST_TEST(DiagramSubclassTest, TwelvePlusSevenIsNineteen) {
   AddConstantDiagram plus_seven(7.0);
   auto context = plus_seven.CreateDefaultContext();
-  auto output = plus_seven.AllocateOutput(*context);
+  auto output = plus_seven.AllocateOutput();
   ASSERT_TRUE(context != nullptr);
   ASSERT_TRUE(output != nullptr);
 
@@ -1160,11 +1259,11 @@ class Reduce : public LeafSystem<double> {
                                   &Reduce::CalcFeedthrough);
   }
 
-  const systems::InputPortDescriptor<double>& get_sink_input() {
+  const systems::InputPort<double>& get_sink_input() {
     return this->get_input_port(sink_input_);
   }
 
-  const systems::InputPortDescriptor<double>& get_feedthrough_input() {
+  const systems::InputPort<double>& get_feedthrough_input() {
     return this->get_input_port(feedthrough_input_);
   }
 
@@ -1559,18 +1658,13 @@ class SystemWithAbstractState : public LeafSystem<double> {
  public:
   SystemWithAbstractState(int id, double update_period) : id_(id) {
     DeclarePeriodicUnrestrictedUpdate(update_period, 0);
+    DeclareAbstractState(AbstractValue::Make<double>(id_));
 
     // Verify that no periodic discrete updates are registered.
     EXPECT_FALSE(this->GetUniquePeriodicDiscreteUpdateAttribute());
   }
 
   ~SystemWithAbstractState() override {}
-
-  std::unique_ptr<AbstractValues> AllocateAbstractState() const override {
-    std::vector<std::unique_ptr<AbstractValue>> values;
-    values.push_back({PackValue<double>(id_)});
-    return std::make_unique<AbstractValues>(std::move(values));
-  }
 
   // Abstract state is set to time + id.
   void DoCalcUnrestrictedUpdate(
@@ -1753,7 +1847,7 @@ class NestedDiagramContextTest : public ::testing::Test {
     big_diagram_ = big_diagram_builder.Build();
     big_diagram_->set_name("big_diagram");
     big_context_ = big_diagram_->CreateDefaultContext();
-    big_output_ = big_diagram_->AllocateOutput(*big_context_);
+    big_output_ = big_diagram_->AllocateOutput();
   }
 
   Integrator<double>* integrator0_;
@@ -1872,6 +1966,40 @@ TEST_F(NestedDiagramContextTest, GetSubsystemState) {
   EXPECT_EQ(big_output_->get_vector_data(1)->GetAtIndex(0), 2);
   EXPECT_EQ(big_output_->get_vector_data(2)->GetAtIndex(0), 3);
   EXPECT_EQ(big_output_->get_vector_data(3)->GetAtIndex(0), 4);
+}
+
+// Tests that ContextBase methods for affecting cache behavior propagate
+// all the way through a nested Diagram. Since leaf output ports have cache
+// entries in their corresponding subcontext, we'll pick one at the bottom
+// and check its behavior.
+TEST_F(NestedDiagramContextTest, CachingChangePropagation) {
+  const Context<double>& diagram1_subcontext =
+      big_diagram_->GetSubsystemContext(*diagram1_, *big_context_);
+  const Context<double>& integrator3_subcontext =
+      diagram1_->GetSubsystemContext(*integrator3_, diagram1_subcontext);
+  const OutputPort<double>& integrator3_output =
+      integrator3_->get_output_port();
+  auto& integrator3_leaf_output =
+      dynamic_cast<const LeafOutputPort<double>&>(integrator3_output);
+
+  auto& cache_entry = integrator3_leaf_output.cache_entry();
+  EXPECT_FALSE(cache_entry.is_cache_entry_disabled(integrator3_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(integrator3_subcontext));
+
+  big_context_->DisableCaching();
+  EXPECT_TRUE(cache_entry.is_cache_entry_disabled(integrator3_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(integrator3_subcontext));
+
+  big_context_->EnableCaching();
+  EXPECT_FALSE(cache_entry.is_cache_entry_disabled(integrator3_subcontext));
+  EXPECT_TRUE(cache_entry.is_out_of_date(integrator3_subcontext));
+
+  // Bring the cache entry up to date.
+  cache_entry.EvalAbstract(integrator3_subcontext);
+  EXPECT_FALSE(cache_entry.is_out_of_date(integrator3_subcontext));
+
+  big_context_->SetAllCacheEntriesOutOfDate();
+  EXPECT_TRUE(cache_entry.is_out_of_date(integrator3_subcontext));
 }
 
 // Tests that an exception is thrown if the systems in a Diagram do not have

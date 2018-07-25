@@ -16,6 +16,7 @@
 #include "drake/common/drake_deprecated.h"
 #include "drake/common/eigen_stl_types.h"
 #include "drake/common/eigen_types.h"
+#include "drake/math/roll_pitch_yaw.h"
 #include "drake/math/rotation_matrix.h"
 #include "drake/multibody/collision/collision_filter.h"
 #include "drake/multibody/collision/drake_collision.h"
@@ -27,6 +28,7 @@
 #include "drake/multibody/pose_map.h"
 #include "drake/multibody/rigid_body.h"
 #include "drake/multibody/rigid_body_actuator.h"
+#include "drake/multibody/rigid_body_distance_constraint.h"
 #include "drake/multibody/rigid_body_frame.h"
 #include "drake/multibody/rigid_body_loop.h"
 #include "drake/multibody/shapes/drake_shapes.h"
@@ -843,6 +845,15 @@ class RigidBodyTree {
   Eigen::Matrix<typename DerivedV::Scalar, Eigen::Dynamic, 1> frictionTorques(
       Eigen::MatrixBase<DerivedV> const& v) const;
 
+
+  /// Computes the generalized forces that correspond to joint springs.
+  ///
+  /// Spring forces are computed joint-by-joint and are a function of position
+  /// only (they do not couple between joints)
+  template <typename Scalar>
+  drake::VectorX<Scalar> CalcGeneralizedSpringForces(
+      const drake::VectorX<Scalar>& q) const;
+
   template <
       typename Scalar,
       typename DerivedPoints>  // not necessarily any relation between the two;
@@ -875,9 +886,11 @@ class RigidBodyTree {
   Eigen::Matrix<Scalar, 3, 1> relativeRollPitchYaw(
       const KinematicsCache<Scalar>& cache, int from_body_or_frame_ind,
       int to_body_or_frame_ind) const {
-    return drake::math::rotmat2rpy(
-        relativeTransform(cache, to_body_or_frame_ind, from_body_or_frame_ind)
-            .linear());
+    const drake::Isometry3<Scalar> pose = relativeTransform(cache,
+                                  to_body_or_frame_ind, from_body_or_frame_ind);
+    const drake::math::RotationMatrix<Scalar> R(pose.linear());
+    const drake::math::RollPitchYaw<Scalar> rpy(R);
+    return rpy.vector();
   }
 
   template <typename Scalar, typename DerivedPoints>
@@ -1480,6 +1493,11 @@ class RigidBodyTree {
       Eigen::Transform<Scalar, 3, Eigen::Isometry>* Tframe) const;
   int parseBodyOrFrameID(const int body_or_frame_id) const;
 
+  /// For details on parameters see RigidBodyDistanceContraint.
+  void addDistanceConstraint(int bodyA_index_in, const Eigen::Vector3d& r_AP_in,
+                             int bodyB_index_in, const Eigen::Vector3d& r_BQ_in,
+                             double distance_in);
+
   template <typename Scalar>
   Eigen::Matrix<Scalar, Eigen::Dynamic, 1> positionConstraints(
       const KinematicsCache<Scalar>& cache) const;
@@ -1665,6 +1683,11 @@ class RigidBodyTree {
   // Rigid body loops
   std::vector<RigidBodyLoop<T>,
               Eigen::aligned_allocator<RigidBodyLoop<T>>> loops;
+
+  // Rigid body distance constraints
+  std::vector<RigidBodyDistanceConstraint,
+      Eigen::aligned_allocator<RigidBodyDistanceConstraint>>
+      distance_constraints;
 
   drake::TwistVector<double> a_grav;
   Eigen::MatrixXd B;  // the B matrix maps inputs into joint-space forces

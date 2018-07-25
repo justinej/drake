@@ -28,19 +28,16 @@ constexpr double kTime = 12.0;
 
 class SystemWithAbstractState : public LeafSystem<double> {
  public:
-  SystemWithAbstractState() {}
-  ~SystemWithAbstractState() override {}
-
-  std::unique_ptr<AbstractValues> AllocateAbstractState() const override {
-    return std::make_unique<AbstractValues>(PackValue(42));
+  SystemWithAbstractState() {
+    DeclareAbstractState(AbstractValue::Make<int>(42));
   }
+  ~SystemWithAbstractState() override {}
 };
 
 class SystemWithNumericParameters : public LeafSystem<double> {
  public:
   SystemWithNumericParameters() {}
   ~SystemWithNumericParameters() override {}
-
 
   std::unique_ptr<Parameters<double>> AllocateParameters() const override {
     return std::make_unique<Parameters<double>>(
@@ -55,6 +52,11 @@ class SystemWithAbstractParameters : public LeafSystem<double> {
   }
   ~SystemWithAbstractParameters() override {}
 };
+
+}  // namespace
+
+// This class must be outside the anonymous namespace to permit the
+// DiagramContext friend declaration to work.
 
 class DiagramContextTest : public ::testing::Test {
  protected:
@@ -106,8 +108,7 @@ class DiagramContextTest : public ::testing::Test {
 
   void AddSystem(const System<double>& sys, SubsystemIndex index) {
     auto subcontext = sys.CreateDefaultContext();
-    auto suboutput = sys.AllocateOutput(*subcontext);
-    context_->AddSystem(index, std::move(subcontext), std::move(suboutput));
+    context_->AddSystem(index, std::move(subcontext));
   }
 
   void AttachInputPorts() {
@@ -136,6 +137,8 @@ class DiagramContextTest : public ::testing::Test {
       system_with_abstract_parameters_;
 };
 
+namespace {
+
 // Verifies that @p state is a clone of the state constructed in
 // DiagramContextTest::SetUp.
 void VerifyClonedState(const State<double>& clone) {
@@ -161,17 +164,13 @@ void VerifyClonedParameters(const Parameters<double>& params) {
   EXPECT_EQ(2048, UnpackIntValue(params.get_abstract_parameter(0)));
 }
 
-// Tests that subsystems have outputs and contexts in the DiagramContext.
+// Tests that subsystems have contexts in the DiagramContext.
 TEST_F(DiagramContextTest, RetrieveConstituents) {
   // All of the subsystems should be leaf Systems.
   for (SubsystemIndex i(0); i < kNumSystems; ++i) {
     auto context = dynamic_cast<const LeafContext<double>*>(
         &context_->GetSubsystemContext(i));
     EXPECT_TRUE(context != nullptr);
-
-    auto output = dynamic_cast<const LeafSystemOutput<double>*>(
-        context_->GetSubsystemOutput(i));
-    EXPECT_TRUE(output != nullptr);
   }
 }
 
@@ -252,9 +251,9 @@ TEST_F(DiagramContextTest, DiagramState) {
 // Tests that no exception is thrown when connecting a valid source
 // and destination port.
 TEST_F(DiagramContextTest, ConnectValid) {
-  EXPECT_NO_THROW(
-      context_->Connect({SubsystemIndex(0) /* adder0_ */, OutputPortIndex(0)},
-                        {SubsystemIndex(1) /* adder1_ */, InputPortIndex(1)}));
+  EXPECT_NO_THROW(context_->SubscribeInputPortToOutputPort(
+      {SubsystemIndex(0) /* adder0_ */, OutputPortIndex(0)},
+      {SubsystemIndex(1) /* adder1_ */, InputPortIndex(1)}));
 }
 
 // Tests that input ports can be assigned to the DiagramContext and then
@@ -267,8 +266,9 @@ TEST_F(DiagramContextTest, SetAndGetInputPorts) {
 }
 
 TEST_F(DiagramContextTest, Clone) {
-  context_->Connect({SubsystemIndex(0) /* adder0_ */, OutputPortIndex(0)},
-                    {SubsystemIndex(1) /* adder1_ */, InputPortIndex(1)});
+  context_->SubscribeInputPortToOutputPort(
+      {SubsystemIndex(0) /* adder0_ */, OutputPortIndex(0)},
+      {SubsystemIndex(1) /* adder1_ */, InputPortIndex(1)});
   AttachInputPorts();
 
   auto clone = dynamic_pointer_cast<DiagramContext<double>>(context_->Clone());

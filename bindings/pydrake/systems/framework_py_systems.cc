@@ -8,6 +8,7 @@
 
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/bindings/pydrake/systems/systems_pybind.h"
+#include "drake/bindings/pydrake/util/deprecation_pybind.h"
 #include "drake/bindings/pydrake/util/drake_optional_pybind.h"
 #include "drake/bindings/pydrake/util/eigen_pybind.h"
 #include "drake/bindings/pydrake/util/wrap_pybind.h"
@@ -274,7 +275,17 @@ struct Impl {
              py::arg("input_port"), py::arg("output_port"))
         // Context.
         .def("CreateDefaultContext", &System<T>::CreateDefaultContext)
-        .def("AllocateOutput", &System<T>::AllocateOutput)
+        .def("AllocateOutput",
+             overload_cast_explicit<unique_ptr<SystemOutput<T>>>(
+                 &System<T>::AllocateOutput))
+        // TODO(sherm1) Deprecate this next signature (context unused).
+        .def("AllocateOutput",
+             [](const System<T>* self, const Context<T>&) {
+               WarnDeprecated(
+                  "`System.AllocateOutput(self, Context)` is deprecated. "
+                  "Please use `System.AllocateOutput(self)` instead.");
+               return self->AllocateOutput();
+             }, py::arg("context"))
         .def(
             "EvalVectorInput",
             [](const System<T>* self, const Context<T>& arg1, int arg2) {
@@ -289,7 +300,9 @@ struct Impl {
             }, py_reference,
             // Keep alive, ownership: `return` keeps `Context` alive.
             py::keep_alive<0, 2>())
+        // Computation.
         .def("CalcOutput", &System<T>::CalcOutput)
+        .def("CalcTimeDerivatives", &System<T>::CalcTimeDerivatives)
         // Sugar.
         .def(
             "GetGraphvizString",

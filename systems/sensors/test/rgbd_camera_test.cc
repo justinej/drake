@@ -232,7 +232,7 @@ class RgbdCameraDiagramTest : public ::testing::Test {
     size_ = size;
     diagram_->Init(position, orientation, size_.width, size_.height);
     context_ = diagram_->CreateDefaultContext();
-    output_ = diagram_->AllocateOutput(*context_);
+    output_ = diagram_->AllocateOutput();
   }
 
   // For moving camera base.
@@ -244,7 +244,7 @@ class RgbdCameraDiagramTest : public ::testing::Test {
     size_ = size;
     diagram_->Init(transformation, size_.width, size_.height);
     context_ = diagram_->CreateDefaultContext();
-    output_ = diagram_->AllocateOutput(*context_);
+    output_ = diagram_->AllocateOutput();
   }
 
   void CalcOutput() {
@@ -278,7 +278,8 @@ TEST_F(RgbdCameraDiagramTest, FixedCameraOutputTest) {
     const Eigen::Isometry3d actual = camera_base_pose->get_isometry();
     EXPECT_TRUE(CompareMatrices(position.matrix(),
                                 actual.translation().matrix(), kTolerance));
-    EXPECT_TRUE(CompareMatrices(math::rpy2rotmat(orientation).matrix(),
+    const math::RollPitchYaw<double> rpy(orientation);
+    EXPECT_TRUE(CompareMatrices(rpy.ToMatrix3ViaRotationMatrix(),
                                 actual.linear().matrix(), kTolerance));
   }
 }
@@ -313,7 +314,7 @@ TEST_F(RgbdCameraDiagramTest, ResetRendererTest) {
     Init("nothing.sdf", X_WB, size);
     Verify();
 
-    auto renderer1 = &diagram_->camera().get_mutable_renderer();
+    auto renderer1 = &diagram_->camera().mutable_renderer();
 
     auto const rgb1 =
         output_->GetMutableData(0)->GetMutableValue<ImageRgba8U>();
@@ -321,10 +322,9 @@ TEST_F(RgbdCameraDiagramTest, ResetRendererTest) {
     diagram_->camera().ResetRenderer(
         std::unique_ptr<RgbdRenderer>(new RgbdRendererVTK(
             RenderingConfig{size.width, size.height, kFovY,
-                            kDepthRangeNear, kDepthRangeFar, kShowWindow},
-            Eigen::Isometry3d::Identity())));
+                            kDepthRangeNear, kDepthRangeFar, kShowWindow})));
 
-    auto renderer2 = &diagram_->camera().get_mutable_renderer();
+    auto renderer2 = &diagram_->camera().mutable_renderer();
     EXPECT_NE(renderer1, renderer2);
 
     CalcOutput();

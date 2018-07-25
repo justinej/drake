@@ -147,9 +147,9 @@ TEST_F(VectorSystemTest, Topology) {
 
   // One input port.
   ASSERT_EQ(dut.get_num_input_ports(), 1);
-  const InputPortDescriptor<double>& descriptor_in = dut.get_input_port();
-  EXPECT_EQ(descriptor_in.get_data_type(), kVectorValued);
-  EXPECT_EQ(descriptor_in.size(), TestVectorSystem::kSize);
+  const InputPort<double>& input_port = dut.get_input_port();
+  EXPECT_EQ(input_port.get_data_type(), kVectorValued);
+  EXPECT_EQ(input_port.size(), TestVectorSystem::kSize);
 
   // One output port.
   ASSERT_EQ(dut.get_num_output_ports(), 1);
@@ -180,7 +180,9 @@ TEST_F(VectorSystemTest, TopologyFailFast) {
   {  // A second output.
     TestVectorSystem dut;
     EXPECT_NO_THROW(dut.CreateDefaultContext());
-    dut.DeclareAbstractOutputPort(nullptr, nullptr);  // No alloc or calc.
+    dut.DeclareAbstractOutputPort(
+        []() { return AbstractValue::Make<int>(0); },  // Dummies.
+        [](const ContextBase&, AbstractValue*) {});
     EXPECT_THROW(dut.CreateDefaultContext(), std::exception);
   }
 

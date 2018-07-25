@@ -16,7 +16,7 @@ namespace geometry {
 
 using systems::AbstractValue;
 using systems::Context;
-using systems::InputPortDescriptor;
+using systems::InputPort;
 using systems::LeafContext;
 using systems::LeafSystem;
 using systems::rendering::PoseBundle;
@@ -27,6 +27,8 @@ using systems::Value;
 using std::make_unique;
 using std::vector;
 
+// TODO(SeanCurtis-TRI): Fix this so that it's invocation ends with ();.
+// https://github.com/RobotLocomotion/drake/issues/8959
 #define GS_THROW_IF_CONTEXT_ALLOCATED ThrowIfContextAllocated(__FUNCTION__);
 
 namespace {
@@ -100,7 +102,7 @@ SceneGraph<T>::SceneGraph(const SceneGraph<U>& other) : SceneGraph() {
   }
   context_has_been_allocated_ = other.context_has_been_allocated_;
 
-  // We need to guarantee that the same source ids map to the same port indexes.
+  // We need to guarantee that the same source ids map to the same port indices.
   // We'll do this by processing the source ids in monotonically increasing
   // order. This is predicated on several principles:
   //   1. Port indices monotonically increase.
@@ -140,7 +142,7 @@ bool SceneGraph<T>::SourceIsRegistered(SourceId id) const {
 }
 
 template <typename T>
-const systems::InputPortDescriptor<T>& SceneGraph<T>::get_source_pose_port(
+const systems::InputPort<T>& SceneGraph<T>::get_source_pose_port(
     SourceId id) {
   ThrowUnlessRegistered(id, "Can't acquire pose port for unknown source id: ");
   return this->get_input_port(input_source_ids_[id].pose_port);
@@ -187,16 +189,16 @@ GeometryId SceneGraph<T>::RegisterAnchoredGeometry(
 }
 
 template <typename T>
-void SceneGraph<T>::ExcludeCollisionsWithin(const GeometrySet&) {
+void SceneGraph<T>::ExcludeCollisionsWithin(const GeometrySet& geometry_set) {
   GS_THROW_IF_CONTEXT_ALLOCATED
-  // TODO(SeanCurtis-TRI): Implemented in the follow-up PR.
+  initial_state_->ExcludeCollisionsWithin(geometry_set);
 }
 
 template <typename T>
-void SceneGraph<T>::ExcludeCollisionsBetween(const GeometrySet&,
-                                             const GeometrySet&) {
+void SceneGraph<T>::ExcludeCollisionsBetween(const GeometrySet& setA,
+                                             const GeometrySet& setB) {
   GS_THROW_IF_CONTEXT_ALLOCATED
-  // TODO(SeanCurtis-TRI): Implemented in the follow-up PR.
+  initial_state_->ExcludeCollisionsBetween(setA, setB);
 }
 
 template <typename T>

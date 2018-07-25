@@ -1,6 +1,7 @@
 #include "drake/multibody/multibody_tree/multibody_plant/multibody_plant.h"
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -10,6 +11,8 @@
 #include "drake/geometry/geometry_frame.h"
 #include "drake/geometry/geometry_instance.h"
 #include "drake/math/orthonormal_basis.h"
+#include "drake/multibody/multibody_tree/joints/prismatic_joint.h"
+#include "drake/multibody/multibody_tree/joints/revolute_joint.h"
 
 namespace drake {
 namespace multibody {
@@ -31,7 +34,7 @@ using geometry::GeometryInstance;
 using geometry::PenetrationAsPointPair;
 using geometry::SceneGraph;
 using geometry::SourceId;
-using systems::InputPortDescriptor;
+using systems::InputPort;
 using systems::OutputPort;
 using systems::State;
 
@@ -44,7 +47,178 @@ using drake::multibody::SpatialForce;
 using drake::multibody::VelocityKinematicsCache;
 using systems::BasicVector;
 using systems::Context;
-using systems::InputPortDescriptor;
+using systems::InputPort;
+using systems::InputPortIndex;
+using systems::OutputPortIndex;
+
+namespace internal {
+// This is a helper struct used to estimate the parameters used in the penalty
+// method to enforce joint limits.
+// The penalty method applies at each joint, a spring-damper force with
+// parameters estimated by this struct.
+// Once a joint reaches a limit (either lower or upper), the governing equations
+// for that joint's coordinate can be approximated by a harmonic oscillator with
+// stiffness and damping corresponding to the penalty parameters for that joint
+// as:  q̈ + 2ζω₀ q̇ + ω₀² q = 0, where ω₀² = k / m̃ is the characteristic
+// numerical stiffness frequency and m̃ is an inertia term computed differently
+// for prismatic and revolute joints.
+// The numerical frequency is defined as ω₀ = 2π/τ₀ with τ₀ = αδt a numerical
+// stiffness time scale set to be proportional to the time step of the discrete
+// model. The damping ratio ζ is set to one, corresponding to a critically
+// damped oscillator and thus so that the penalty method emulates the effect of
+// a "hard" limit.
+// Knowing ω₀ (from the time step) and m̃ (a function of the bodies connected by
+// the joint), it is possible, from the equations for a harmonic oscillator, to
+// estimate the stiffness k and damping d parameters for the penalty method.
+// Finally, MultibodyPlant uses a value of α to guarantee the stability of the
+// method (from a stability analysis of the time stepping method for the
+// model of a harmonic oscillator).
+// Using this estimation procedure, the stiffness k is shown to be proportional
+// to the inverse of the time step squared, i.e. k ∝ 1/δt².
+// Since, at steady state, the violation of the joint limit is inversely
+// proportional to the stiffness parameter, this violation turns out being
+// proportional to the time step squared, that is, Δq ∝ δt².
+// Therefore the convergence of the joint limit violation is expected to be
+// quadratic with the time step.
+template <typename T>
+struct JointLimitsPenaltyParametersEstimator {
+  // This helper method returns a pair (k, d) (in that order) for a harmonic
+  // oscillator given the period τ₀ of the oscillator and the inertia m̃. d is
+  // computed for a critically damped oscillator.
+  // The harmonic oscillator model corresponds to:
+  //    m̃q̈ + d q̇ + k q = 0
+  // or equivalently:
+  //    q̈ + 2ζω₀ q̇ + ω₀² q = 0
+  // with ω₀ = sqrt(k/m̃) and ζ = d/sqrt(km̃)/2 the damping ratio, which is one
+  // for critically damped oscillators.
+  static std::pair<double, double>
+  CalcCriticallyDampedHarmonicOscillatorParameters(
+      double period, double inertia) {
+    const double damping_ratio = 1.0;  // Critically damped.
+    const double omega0 = 2.0 * M_PI / period;
+    const double stiffness = inertia * omega0 * omega0;
+    const double damping = 2.0 * damping_ratio * std::sqrt(inertia * stiffness);
+    return std::make_pair(stiffness, damping);
+  }
+
+  // This method combines a pair of penalty parameters params1 and params2.
+  // The combination law is very simple, this method returns the set of
+  // parameters with the smallest stiffness, and thus it favors the stiffness
+  // leading to the lower numerical stiffness (thus guaranteeing stability).
+  static std::pair<double, double> PickLessStiffPenaltyParameters(
+      const std::pair<double, double>& params1,
+      const std::pair<double, double>& params2) {
+    const double stiffness1 = params1.first;
+    const double stiffness2 = params2.first;
+    if (stiffness1 < stiffness2) {
+      return params1;
+    } else {
+      return params2;
+    }
+  }
+
+  // Helper method to estimate the penalty parameters for a prismatic joint.
+  // The strategy consists in computing a set of penalty parameters for each
+  // body connected by joint as if the other body was welded and ignoring
+  // any other bodies in the system. This leads to a spring mass system where
+  // the inertia m̃ corresponds to the mass of the body in consideration.
+  // Then the penalty parameters estimated for each body are combined with
+  // PickLessStiffPenaltyParameters() leading to a single set of parameters.
+  static std::pair<double, double> CalcPrismaticJointPenaltyParameters(
+      const PrismaticJoint<T>& joint, double numerical_time_scale) {
+    // Penalty parameters for the parent body (child fixed).
+    const double parent_mass = joint.parent_body().index() == world_index() ?
+                               std::numeric_limits<double>::infinity() :
+                               joint.parent_body().get_default_mass();
+    const auto parent_params = CalcCriticallyDampedHarmonicOscillatorParameters(
+        numerical_time_scale, parent_mass);
+    // Penalty parameters for the child body (parent fixed).
+    const double child_mass = joint.child_body().index() == world_index() ?
+                               std::numeric_limits<double>::infinity() :
+                               joint.child_body().get_default_mass();
+    const auto child_params = CalcCriticallyDampedHarmonicOscillatorParameters(
+        numerical_time_scale, child_mass);
+
+    // Return the combined penalty parameters of the two bodies.
+    auto params = PickLessStiffPenaltyParameters(parent_params, child_params);
+
+    return params;
+  }
+
+  // Helper method to estimate the penalty parameters for a revolute joint.
+  // The strategy consists in computing a set of penalty parameters for each
+  // body connected by joint as if the other body was welded and ignoring
+  // any other bodies in the system. This leads to a torsional spring system
+  // for which the inertia m̃ corresponds to the rotational inertia of the body
+  // in consideration, computed about the axis of the joint.
+  // Then the penalty parameters estimated for each body are combined with
+  // PickLessStiffPenaltyParameters() leading to a single set of parameters.
+  static std::pair<double, double> CalcRevoluteJointPenaltyParameters(
+      const RevoluteJoint<T>& joint, double numerical_time_scale) {
+    // For the body attached to `frame` (one of the parent/child frames of
+    // `joint`), this helper lambda computes the rotational inertia of the body
+    // about the axis of the joint.
+    // That is, it computes Iₐ = âᵀ⋅Iᴮ⋅â where Iᴮ is the rotational inertia of
+    // the body, â is the axis of the joint, and Iₐ is the (scalar) rotational
+    // inertia of the body computed about the joint's axis. Iₐ is the inertia
+    // that must be considered for the problem of a pendulum oscillating about
+    // an axis â, leading to the equations for a harmonic oscillator when we
+    // apply the penalty forces.
+    // For further details on Iₐ, the interested reader can refer to
+    // [Goldstein, 2014, §5.3].
+    //
+    // [Goldstein, 2014] Goldstein, H., Poole, C.P. and Safko, J.L., 2014.
+    //                   Classical Mechanics: Pearson New International Edition.
+    //                   Pearson Higher Ed.
+    auto CalcRotationalInertiaAboutAxis = [&joint](const Frame<T>& frame) {
+          const RigidBody<T>* body =
+              dynamic_cast<const RigidBody<T>*>(&frame.body());
+          DRAKE_THROW_UNLESS(body != nullptr);
+
+          // This check is needed for such models for which the user leaves the
+          // spatial inertias unspecified (i.e. initialized to NaN). A user
+          // might do this when only interested in performing kinematics
+          // computations.
+          if (std::isnan(body->get_default_mass())) {
+            return std::numeric_limits<double>::infinity();
+          }
+
+          const SpatialInertia<T>& M_PPo_P =
+              body->default_spatial_inertia().template cast<T>();
+          const Isometry3<T> X_PJ = frame.GetFixedPoseInBodyFrame();
+          const Vector3<T>& p_PJ = X_PJ.translation();
+          const Matrix3<T>& R_PJ = X_PJ.linear();
+          const SpatialInertia<T> M_PJo_J =
+              M_PPo_P.Shift(p_PJ).ReExpress(R_PJ);
+          const RotationalInertia<T> I_PJo_J =
+              M_PJo_J.CalcRotationalInertia();
+          // Rotational inertia about the joint axis.
+          const Vector3<T>& axis = joint.revolute_axis();
+          const T I_a = axis.transpose() * (I_PJo_J * axis);
+          return ExtractDoubleOrThrow(I_a);
+        };
+
+    // Rotational inertia about the joint's axis for the parent body.
+    const double I_Pa =
+        joint.parent_body().index() == world_index() ?
+        std::numeric_limits<double>::infinity() :
+        CalcRotationalInertiaAboutAxis(joint.frame_on_parent());
+    auto parent_params = CalcCriticallyDampedHarmonicOscillatorParameters(
+        numerical_time_scale, I_Pa);
+
+    // Rotational inertia about the joint's axis for the child body.
+    const double I_Ca =
+        joint.child_body().index() == world_index() ?
+        std::numeric_limits<double>::infinity() :
+        CalcRotationalInertiaAboutAxis(joint.frame_on_child());
+    auto child_params = CalcCriticallyDampedHarmonicOscillatorParameters(
+        numerical_time_scale, I_Ca);
+
+    // Return the combined penalty parameters of the two bodies.
+    return PickLessStiffPenaltyParameters(parent_params, child_params);
+  }
+};
+}  // namespace internal
 
 template<typename T>
 MultibodyPlant<T>::MultibodyPlant(double time_step) :
@@ -71,10 +245,23 @@ geometry::SourceId MultibodyPlant<T>::RegisterAsSourceForSceneGraph(
 }
 
 template <typename T>
-void MultibodyPlant<T>::RegisterVisualGeometry(const Body<T>& body,
-                                               const Isometry3<double>& X_BG,
-                                               const geometry::Shape& shape,
-                                               SceneGraph<T>* scene_graph) {
+geometry::GeometryId MultibodyPlant<T>::RegisterVisualGeometry(
+    const Body<T>& body, const Isometry3<double>& X_BG,
+    const geometry::Shape& shape, geometry::SceneGraph<T>* scene_graph) {
+  return RegisterVisualGeometry(body, X_BG, shape, geometry::VisualMaterial(),
+                                scene_graph);
+}
+
+template <typename T>
+geometry::GeometryId MultibodyPlant<T>::RegisterVisualGeometry(
+    const Body<T>& body, const Isometry3<double>& X_BG,
+    const geometry::Shape& shape, const geometry::VisualMaterial& material,
+    SceneGraph<T>* scene_graph) {
+  // TODO(SeanCurtis-TRI): Consider simply adding an interface that takes a
+  // unique pointer to an already instantiated GeometryInstance. This will
+  // require shuffling around a fair amount of code and should ultimately be
+  // supplanted by providing a cleaner interface between parsing MBP and SG
+  // elements.
   DRAKE_MBP_THROW_IF_FINALIZED();
   DRAKE_THROW_UNLESS(scene_graph != nullptr);
   DRAKE_THROW_UNLESS(geometry_source_is_registered());
@@ -88,14 +275,15 @@ void MultibodyPlant<T>::RegisterVisualGeometry(const Body<T>& body,
   // TODO(amcastro-tri): Consider doing this after finalize so that we can
   // register anchored geometry on ANY body welded to the world.
   if (body.index() == world_index()) {
-    id = RegisterAnchoredGeometry(X_BG, shape, scene_graph);
+    id = RegisterAnchoredGeometry(X_BG, shape, material, scene_graph);
   } else {
-    id = RegisterGeometry(body, X_BG, shape, scene_graph);
+    id = RegisterGeometry(body, X_BG, shape, material, scene_graph);
   }
   const int visual_index = geometry_id_to_visual_index_.size();
   geometry_id_to_visual_index_[id] = visual_index;
   DRAKE_ASSERT(num_bodies() == static_cast<int>(visual_geometries_.size()));
   visual_geometries_[body.index()].push_back(id);
+  return id;
 }
 
 template <typename T>
@@ -120,12 +308,19 @@ geometry::GeometryId MultibodyPlant<T>::RegisterCollisionGeometry(
         "RegisterAsSourceForSceneGraph()");
   }
   GeometryId id;
+  // We use an "invisible" color with alpha channel set to zero so that
+  // collision geometry does not render on top of visual geometry in our
+  // visualizer.
+  // TODO(amcastro-tri): Remove this "invisible" color once "roles" land in
+  // SceneGraph.
+  const geometry::VisualMaterial invisible_material(
+      Vector4<double>(0.0, 0.0, 0.0, 0.0));
   // TODO(amcastro-tri): Consider doing this after finalize so that we can
   // register anchored geometry on ANY body welded to the world.
   if (body.index() == world_index()) {
-    id = RegisterAnchoredGeometry(X_BG, shape, scene_graph);
+    id = RegisterAnchoredGeometry(X_BG, shape, invisible_material, scene_graph);
   } else {
-    id = RegisterGeometry(body, X_BG, shape, scene_graph);
+    id = RegisterGeometry(body, X_BG, shape, invisible_material, scene_graph);
   }
   const int collision_index = geometry_id_to_collision_index_.size();
   geometry_id_to_collision_index_[id] = collision_index;
@@ -145,9 +340,34 @@ MultibodyPlant<T>::GetCollisionGeometriesForBody(const Body<T>& body) const {
 }
 
 template <typename T>
+geometry::GeometrySet MultibodyPlant<T>::CollectRegisteredGeometries(
+    const std::vector<const RigidBody<T>*>& bodies) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(geometry_source_is_registered());
+
+  geometry::GeometrySet geometry_set;
+  for (const RigidBody<T>* body : bodies) {
+    optional<FrameId> frame_id = GetBodyFrameIdIfExists(body->index());
+    if (frame_id) {
+      geometry_set.Add(frame_id.value());
+    } else if (body->index() == world_index()) {
+      // TODO(SeanCurtis-TRI): MBP shouldn't be storing these GeometryIds.
+      // Remove this when SG supports world frame id that can be mapped to
+      // MBP's world body.
+      geometry_set.Add(collision_geometries_[body->index()]);
+    }
+  }
+  return geometry_set;
+}
+
+template <typename T>
 geometry::GeometryId MultibodyPlant<T>::RegisterGeometry(
     const Body<T>& body, const Isometry3<double>& X_BG,
-    const geometry::Shape& shape, SceneGraph<T>* scene_graph) {
+    const geometry::Shape& shape,
+    const optional<geometry::VisualMaterial>& material,
+    SceneGraph<T>* scene_graph) {
+  // This should never be called with the world index.
+  DRAKE_DEMAND(body.index() != world_index());
   DRAKE_ASSERT(!is_finalized());
   DRAKE_ASSERT(geometry_source_is_registered());
   DRAKE_ASSERT(scene_graph == scene_graph_);
@@ -162,9 +382,16 @@ geometry::GeometryId MultibodyPlant<T>::RegisterGeometry(
   }
 
   // Register geometry in the body frame.
+  std::unique_ptr<geometry::GeometryInstance> geometry_instance;
+  if (material) {
+    geometry_instance = std::make_unique<GeometryInstance>(X_BG, shape.Clone(),
+                                                           material.value());
+  } else {
+    geometry_instance = std::make_unique<GeometryInstance>(X_BG, shape.Clone());
+  }
   GeometryId geometry_id = scene_graph->RegisterGeometry(
       source_id_.value(), body_index_to_frame_id_[body.index()],
-      std::make_unique<GeometryInstance>(X_BG, shape.Clone()));
+      std::move(geometry_instance));
   geometry_id_to_body_index_[geometry_id] = body.index();
   return geometry_id;
 }
@@ -172,13 +399,22 @@ geometry::GeometryId MultibodyPlant<T>::RegisterGeometry(
 template <typename T>
 geometry::GeometryId MultibodyPlant<T>::RegisterAnchoredGeometry(
     const Isometry3<double>& X_WG, const geometry::Shape& shape,
+    const optional<geometry::VisualMaterial>& material,
     SceneGraph<T>* scene_graph) {
   DRAKE_ASSERT(!is_finalized());
   DRAKE_ASSERT(geometry_source_is_registered());
   DRAKE_ASSERT(scene_graph == scene_graph_);
+
+  std::unique_ptr<geometry::GeometryInstance> geometry_instance;
+  if (material) {
+    geometry_instance = std::make_unique<GeometryInstance>(X_WG, shape.Clone(),
+                                                           material.value());
+  } else {
+    geometry_instance = std::make_unique<GeometryInstance>(X_WG, shape.Clone());
+  }
   GeometryId geometry_id = scene_graph->RegisterAnchoredGeometry(
       source_id_.value(),
-      std::make_unique<GeometryInstance>(X_WG, shape.Clone()));
+      std::move(geometry_instance));
   geometry_id_to_body_index_[geometry_id] = world_index();
   return geometry_id;
 }
@@ -187,7 +423,97 @@ template<typename T>
 void MultibodyPlant<T>::Finalize(geometry::SceneGraph<T>* scene_graph) {
   model_->Finalize();
   FilterAdjacentBodies(scene_graph);
+  ExcludeCollisionsWithVisualGeometry(scene_graph);
   FinalizePlantOnly();
+}
+
+template<typename T>
+void MultibodyPlant<T>::SetUpJointLimitsParameters() {
+  for (JointIndex joint_index(0); joint_index < model().num_joints();
+       ++joint_index) {
+    // Currently MultibodyPlant applies these "compliant" joint limit forces
+    // using an explicit Euler strategy. Stability analysis of the explict Euler
+    // applied to the harmonic oscillator (the model used for these compliant
+    // forces) shows the scheme to be stable for kAlpha > 2π. We take a
+    // significantly larger kAlpha so that we are well within the stability
+    // region of the scheme.
+    // TODO(amcastro-tri): Decrease the value of kAlpha to be closer to one when
+    // the time stepping scheme is updated to be implicit in the joint limits.
+    const double kAlpha = 20 * M_PI;
+
+    const Joint<T>& joint = model().get_joint(joint_index);
+    auto revolute_joint = dynamic_cast<const RevoluteJoint<T>*>(&joint);
+    auto prismatic_joint = dynamic_cast<const PrismaticJoint<T>*>(&joint);
+    // Currently MBP only supports limits for prismatic and revolute joints.
+    if (!(revolute_joint || prismatic_joint)) continue;
+
+    const double penalty_time_scale = kAlpha * time_step();
+
+    if (revolute_joint) {
+      // We only compute parameters if they are far from being infinity.
+      // SDF defaults to 1.0e16 instead of infinity.
+      if (-1.0e16 < revolute_joint->lower_limit() ||
+          revolute_joint->upper_limit() < 1.0e16) {
+        joint_limits_parameters_.joints_with_limits.push_back(
+            revolute_joint->index());
+
+        // Store joint limits.
+        joint_limits_parameters_.lower_limit.push_back(
+            revolute_joint->lower_limit());
+        joint_limits_parameters_.upper_limit.push_back(
+            revolute_joint->upper_limit());
+        // Estimate penalty parameters.
+        auto penalty_parameters =
+            internal::JointLimitsPenaltyParametersEstimator<T>::
+            CalcRevoluteJointPenaltyParameters(
+                *revolute_joint, penalty_time_scale);
+        joint_limits_parameters_.stiffness.push_back(penalty_parameters.first);
+        joint_limits_parameters_.damping.push_back(penalty_parameters.second);
+      }
+    }
+
+    if (prismatic_joint) {
+      // We only compute parameters if they are far from being infinity.
+      // SDF defaults to 1.0e16 instead of infinity.
+      if (-1.0e16 < prismatic_joint->lower_limit() ||
+          prismatic_joint->upper_limit() < 1.0e16) {
+        joint_limits_parameters_.joints_with_limits.push_back(
+            prismatic_joint->index());
+
+        // Store joint limits.
+        joint_limits_parameters_.lower_limit.push_back(
+            prismatic_joint->lower_limit());
+        joint_limits_parameters_.upper_limit.push_back(
+            prismatic_joint->upper_limit());
+
+        // Estimate penalty parameters.
+        auto penalty_parameters =
+            internal::JointLimitsPenaltyParametersEstimator<T>::
+            CalcPrismaticJointPenaltyParameters(
+                *prismatic_joint, penalty_time_scale);
+        joint_limits_parameters_.stiffness.push_back(penalty_parameters.first);
+        joint_limits_parameters_.damping.push_back(penalty_parameters.second);
+      }
+    }
+
+    // Since currently MBP only handles joint limits for discrete models, verify
+    // there are no joint limits when the model is continuous.
+    // Therefore we throw an exception with an appropriate message when a user
+    // specifies joint limits for a continuous model.
+    if (!is_discrete()) {
+      for (size_t i = 0; i < joint_limits_parameters_.stiffness.size(); ++i) {
+        const double stiffness = joint_limits_parameters_.stiffness[i];
+        if (!std::isinf(stiffness)) {
+          const JointIndex index =
+              joint_limits_parameters_.joints_with_limits[i];
+          throw std::logic_error(
+              "Currently MultibodyPlant does not handle joint limits for "
+              "continuous models. However a limit was specified for joint `"
+              "`" + model().get_joint(index).name() + "`.");
+        }
+      }
+    }
+  }
 }
 
 template<typename T>
@@ -196,7 +522,6 @@ void MultibodyPlant<T>::FinalizePlantOnly() {
   // Only declare ports to communicate with a SceneGraph if the plant is
   // provided with a valid source id.
   if (source_id_) DeclareSceneGraphPorts();
-  DeclareCacheEntries();
   scene_graph_ = nullptr;  // must not be used after Finalize().
   if (num_collision_geometries() > 0 &&
       penalty_method_contact_parameters_.time_scale < 0)
@@ -204,6 +529,19 @@ void MultibodyPlant<T>::FinalizePlantOnly() {
   if (num_collision_geometries() > 0 &&
       stribeck_model_.stiction_tolerance() < 0)
     set_stiction_tolerance();
+  // Make a contact solver when the plant is modeled as a discrete system.
+  if (is_discrete()) {
+    implicit_stribeck_solver_ =
+        std::make_unique<implicit_stribeck::ImplicitStribeckSolver<T>>(
+            num_velocities());
+    // Set the stiction tolerance according to the values set by users with
+    // set_stiction_tolerance().
+    implicit_stribeck::Parameters solver_parameters;
+    solver_parameters.stiction_tolerance =
+        stribeck_model_.stiction_tolerance();
+    implicit_stribeck_solver_->set_solver_parameters(solver_parameters);
+  }
+  SetUpJointLimitsParameters();
 }
 
 template <typename T>
@@ -242,6 +580,29 @@ void MultibodyPlant<T>::FilterAdjacentBodies(SceneGraph<T>* scene_graph) {
             geometry::GeometrySet(*parent_id));
       }
     }
+  }
+}
+
+template <typename T>
+void MultibodyPlant<T>::ExcludeCollisionsWithVisualGeometry(
+    geometry::SceneGraph<T>* scene_graph) {
+  if (geometry_source_is_registered()) {
+    if (scene_graph == nullptr) {
+      throw std::logic_error(
+          "This MultibodyPlant has been registered as a SceneGraph geometry "
+              "source. Finalize() should be invoked with a pointer to the "
+              "SceneGraph instance");
+    }
+    geometry::GeometrySet visual;
+    for (const auto& body_geometries : visual_geometries_) {
+      visual.Add(body_geometries);
+    }
+    geometry::GeometrySet collision;
+    for (const auto& body_geometries : collision_geometries_) {
+      collision.Add(body_geometries);
+    }
+    scene_graph->ExcludeCollisionsWithin(visual);
+    scene_graph->ExcludeCollisionsBetween(visual, collision);
   }
 }
 
@@ -312,6 +673,8 @@ MatrixX<T> MultibodyPlant<T>::CalcTangentVelocitiesJacobian(
   // D is defined such that vt = D * v, with vt of size 2nc.
   MatrixX<T> D(2 * num_contacts, num_velocities());
 
+  DRAKE_ASSERT(R_WC_set);
+  R_WC_set->clear();
   if (R_WC_set != nullptr) R_WC_set->reserve(point_pairs_set.size());
   for (int icontact = 0; icontact < num_contacts; ++icontact) {
     const auto& point_pair = point_pairs_set[icontact];
@@ -427,31 +790,137 @@ void MultibodyPlant<T>::set_penetration_allowance(
   penalty_method_contact_parameters_.time_scale = time_scale;
 }
 
-template<>
-void MultibodyPlant<double>::CalcAndAddContactForcesByPenaltyMethod(
-    const systems::Context<double>& context,
-    const PositionKinematicsCache<double>& pc,
-    const VelocityKinematicsCache<double>& vc,
-    std::vector<SpatialForce<double>>* F_BBo_W_array) const {
+template <>
+std::vector<PenetrationAsPointPair<double>>
+MultibodyPlant<double>::CalcPointPairPenetrations(
+    const systems::Context<double>& context) const {
+  if (num_collision_geometries() > 0) {
+    if (!geometry_query_port_.is_valid()) {
+      throw std::logic_error(
+          "This MultibodyPlant registered geometry for contact handling. "
+          "However its query input port (get_geometry_query_input_port()) "
+          "is not connected. ");
+    }
+    const geometry::QueryObject<double>& query_object =
+        this->EvalAbstractInput(context, geometry_query_port_)
+            ->template GetValue<geometry::QueryObject<double>>();
+    return query_object.ComputePointPairPenetration();
+  }
+  return std::vector<PenetrationAsPointPair<double>>();
+}
+
+template<typename T>
+std::vector<PenetrationAsPointPair<T>>
+MultibodyPlant<T>::CalcPointPairPenetrations(
+    const systems::Context<T>&) const {
+  DRAKE_ABORT_MSG("This method only supports T = double.");
+}
+
+template<typename T>
+std::vector<CoulombFriction<double>>
+MultibodyPlant<T>::CalcCombinedFrictionCoefficients(
+    const std::vector<PenetrationAsPointPair<T>>& point_pairs) const {
+  std::vector<CoulombFriction<double>> combined_frictions;
+  combined_frictions.reserve(point_pairs.size());
+  for (const auto& pair : point_pairs) {
+    const GeometryId geometryA_id = pair.id_A;
+    const GeometryId geometryB_id = pair.id_B;
+
+    const int collision_indexA =
+        geometry_id_to_collision_index_.at(geometryA_id);
+    const int collision_indexB =
+        geometry_id_to_collision_index_.at(geometryB_id);
+    const CoulombFriction<double>& geometryA_friction =
+        default_coulomb_friction_[collision_indexA];
+    const CoulombFriction<double>& geometryB_friction =
+        default_coulomb_friction_[collision_indexB];
+
+    combined_frictions.push_back(CalcContactFrictionFromSurfaceProperties(
+        geometryA_friction, geometryB_friction));
+  }
+  return combined_frictions;
+}
+
+template<typename T>
+void MultibodyPlant<T>::CalcContactResultsOutput(
+    const systems::Context<T>&,
+    ContactResults<T>* contact_results) const {
+  DRAKE_DEMAND(contact_results != nullptr);
+  // TODO(amcastro-tri): Eval() contact results when caching lands.
+  *contact_results = contact_results_;
+}
+
+template<typename T>
+void MultibodyPlant<T>::CalcContactResults(
+    const systems::Context<T>&,
+    const std::vector<PenetrationAsPointPair<T>>& point_pairs,
+    const std::vector<Matrix3<T>>& R_WC_set,
+    ContactResults<T>* contact_results) const {
+  if (num_collision_geometries() == 0) return;
+  DRAKE_DEMAND(contact_results != nullptr);
+  const int num_contacts = point_pairs.size();
+  DRAKE_DEMAND(static_cast<int>(R_WC_set.size()) == num_contacts);
+
+  // Note: auto below resolves to VectorBlock<const VectorX<T>>.
+  using VectorXBlock = Eigen::VectorBlock<const VectorX<T>>;
+  const VectorXBlock fn = implicit_stribeck_solver_->get_normal_forces();
+  const VectorXBlock ft = implicit_stribeck_solver_->get_friction_forces();
+  const VectorXBlock vt =
+      implicit_stribeck_solver_->get_tangential_velocities();
+  const VectorXBlock vn = implicit_stribeck_solver_->get_normal_velocities();
+
+  DRAKE_DEMAND(fn.size() == num_contacts);
+  DRAKE_DEMAND(ft.size() == 2 * num_contacts);
+  DRAKE_DEMAND(vn.size() == num_contacts);
+  DRAKE_DEMAND(vt.size() == 2 * num_contacts);
+
+  contact_results->Clear();
+  for (size_t icontact = 0; icontact < point_pairs.size(); ++icontact) {
+    const auto& pair = point_pairs[icontact];
+    const GeometryId geometryA_id = pair.id_A;
+    const GeometryId geometryB_id = pair.id_B;
+
+    BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
+    BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
+
+    const Vector3<T> p_WC = 0.5 * (pair.p_WCa + pair.p_WCb);
+
+    const Matrix3<T>& R_WC = R_WC_set[icontact];
+
+    // Contact forces applied on B at contact point C.
+    const Vector3<T> f_Bc_C(
+        ft(2 * icontact), ft(2 * icontact + 1), fn(icontact));
+    const Vector3<T> f_Bc_W = R_WC * f_Bc_C;
+
+    // Slip velocity.
+    const T slip = vt.template segment<2>(2 * icontact).norm();
+
+    // Separation velocity in the normal direction.
+    const T separation_velocity = vn(icontact);
+
+    // Add pair info to the contact results.
+    contact_results->AddContactInfo(
+        {bodyA_index, bodyB_index, f_Bc_W, p_WC,
+         separation_velocity, slip, pair});
+  }
+}
+
+template<typename T>
+void MultibodyPlant<T>::CalcAndAddContactForcesByPenaltyMethod(
+    const systems::Context<T>&,
+    const PositionKinematicsCache<T>& pc,
+    const VelocityKinematicsCache<T>& vc,
+    const std::vector<PenetrationAsPointPair<T>>& point_pairs,
+    std::vector<SpatialForce<T>>* F_BBo_W_array) const {
   if (num_collision_geometries() == 0) return;
 
-  const geometry::QueryObject<double>& query_object =
-      this->EvalAbstractInput(context, geometry_query_port_)
-          ->template GetValue<geometry::QueryObject<double>>();
+  std::vector<CoulombFriction<double>> combined_friction_pairs =
+      CalcCombinedFrictionCoefficients(point_pairs);
 
-  std::vector<PenetrationAsPointPair<double>> penetrations =
-      query_object.ComputePointPairPenetration();
-  for (const auto& penetration : penetrations) {
-    const GeometryId geometryA_id = penetration.id_A;
-    const GeometryId geometryB_id = penetration.id_B;
-
-    // TODO(amcastro-tri): Request SceneGraph to do this filtering for us
-    // when that capability lands.
-    // TODO(amcastro-tri): consider allowing this id's to belong to a third
-    // external system when they correspond to anchored geometry.
-    if (!is_collision_geometry(geometryA_id) ||
-        !is_collision_geometry(geometryB_id))
-      continue;
+  for (size_t icontact = 0; icontact < point_pairs.size(); ++icontact) {
+    const auto& pair = point_pairs[icontact];
+    const GeometryId geometryA_id = pair.id_A;
+    const GeometryId geometryB_id = pair.id_B;
 
     BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
     BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
@@ -461,96 +930,83 @@ void MultibodyPlant<double>::CalcAndAddContactForcesByPenaltyMethod(
     BodyNodeIndex bodyB_node_index =
         model().get_body(bodyB_index).node_index();
 
-    // Penetration depth, > 0 during penetration.
-    const double& x = penetration.depth;
+    // Penetration depth, > 0 during pair.
+    const T& x = pair.depth;
     DRAKE_ASSERT(x >= 0);
-    const Vector3<double>& nhat_BA_W = penetration.nhat_BA_W;
-    const Vector3<double>& p_WCa = penetration.p_WCa;
-    const Vector3<double>& p_WCb = penetration.p_WCb;
+    const Vector3<T>& nhat_BA_W = pair.nhat_BA_W;
+    const Vector3<T>& p_WCa = pair.p_WCa;
+    const Vector3<T>& p_WCb = pair.p_WCb;
 
     // Contact point C.
-    const Vector3<double> p_WC = 0.5 * (p_WCa + p_WCb);
+    const Vector3<T> p_WC = 0.5 * (p_WCa + p_WCb);
 
     // Contact point position on body A.
-    const Vector3<double>& p_WAo =
+    const Vector3<T>& p_WAo =
         pc.get_X_WB(bodyA_node_index).translation();
-    const Vector3<double>& p_CoAo_W = p_WAo - p_WC;
+    const Vector3<T>& p_CoAo_W = p_WAo - p_WC;
 
     // Contact point position on body B.
-    const Vector3<double>& p_WBo =
+    const Vector3<T>& p_WBo =
         pc.get_X_WB(bodyB_node_index).translation();
-    const Vector3<double>& p_CoBo_W = p_WBo - p_WC;
+    const Vector3<T>& p_CoBo_W = p_WBo - p_WC;
 
     // Separation velocity, > 0  if objects separate.
-    const Vector3<double> v_WAc =
+    const Vector3<T> v_WAc =
         vc.get_V_WB(bodyA_node_index).Shift(-p_CoAo_W).translational();
-    const Vector3<double> v_WBc =
+    const Vector3<T> v_WBc =
         vc.get_V_WB(bodyB_node_index).Shift(-p_CoBo_W).translational();
-    const Vector3<double> v_AcBc_W = v_WBc - v_WAc;
+    const Vector3<T> v_AcBc_W = v_WBc - v_WAc;
 
     // if xdot = vn > 0 ==> they are getting closer.
-    const double vn = v_AcBc_W.dot(nhat_BA_W);
+    const T vn = v_AcBc_W.dot(nhat_BA_W);
 
     // Magnitude of the normal force on body A at contact point C.
-    const double k = penalty_method_contact_parameters_.stiffness;
-    const double d = penalty_method_contact_parameters_.damping;
-    const double fn_AC = k * x * (1.0 + d * vn);
+    const T k = penalty_method_contact_parameters_.stiffness;
+    const T d = penalty_method_contact_parameters_.damping;
+    const T fn_AC = k * x * (1.0 + d * vn);
 
     if (fn_AC > 0) {
       // Normal force on body A, at C, expressed in W.
-      const Vector3<double> fn_AC_W = fn_AC * nhat_BA_W;
+      const Vector3<T> fn_AC_W = fn_AC * nhat_BA_W;
 
-      // Since the normal force is positive (non-zero), compute the friction
-      // force. First obtain the friction coefficients:
-      const int collision_indexA =
-          geometry_id_to_collision_index_.at(geometryA_id);;
-      const int collision_indexB =
-          geometry_id_to_collision_index_.at(geometryB_id);;
-      const CoulombFriction<double>& geometryA_friction =
-          default_coulomb_friction_[collision_indexA];
-      const CoulombFriction<double>& geometryB_friction =
-          default_coulomb_friction_[collision_indexB];
-      const CoulombFriction<double> combined_friction_coefficients =
-          CalcContactFrictionFromSurfaceProperties(
-              geometryA_friction, geometryB_friction);
       // Compute tangential velocity, that is, v_AcBc projected onto the tangent
       // plane with normal nhat_BA:
-      const Vector3<double> vt_AcBc_W = v_AcBc_W - vn * nhat_BA_W;
+      const Vector3<T> vt_AcBc_W = v_AcBc_W - vn * nhat_BA_W;
       // Tangential speed (squared):
-      const double vt_squared = vt_AcBc_W.squaredNorm();
+      const T vt_squared = vt_AcBc_W.squaredNorm();
 
       // Consider a value indistinguishable from zero if it is smaller
       // then 1e-14 and test against that value squared.
-      const double kNonZeroSqd = 1e-14 * 1e-14;
+      const T kNonZeroSqd = 1e-14 * 1e-14;
       // Tangential friction force on A at C, expressed in W.
-      Vector3<double> ft_AC_W = Vector3<double>::Zero();
+      Vector3<T> ft_AC_W = Vector3<T>::Zero();
       if (vt_squared > kNonZeroSqd) {
-        const double vt = sqrt(vt_squared);
+        const T vt = sqrt(vt_squared);
         // Stribeck friction coefficient.
-        const double mu_stribeck = stribeck_model_.ComputeFrictionCoefficient(
-            vt, combined_friction_coefficients);
+        const T mu_stribeck = stribeck_model_.ComputeFrictionCoefficient(
+            vt, combined_friction_pairs[icontact]);
         // Tangential direction.
-        const Vector3<double> that_W = vt_AcBc_W / vt;
+        const Vector3<T> that_W = vt_AcBc_W / vt;
 
         // Magnitude of the friction force on A at C.
-        const double ft_AC = mu_stribeck * fn_AC;
+        const T ft_AC = mu_stribeck * fn_AC;
         ft_AC_W = ft_AC * that_W;
       }
 
       // Spatial force on body A at C, expressed in the world frame W.
-      const SpatialForce<double> F_AC_W(Vector3<double>::Zero(),
-                                        fn_AC_W + ft_AC_W);
+      const SpatialForce<T> F_AC_W(Vector3<T>::Zero(),
+                                   fn_AC_W + ft_AC_W);
 
       if (F_BBo_W_array != nullptr) {
         if (bodyA_index != world_index()) {
           // Spatial force on body A at Ao, expressed in W.
-          const SpatialForce<double> F_AAo_W = F_AC_W.Shift(p_CoAo_W);
+          const SpatialForce<T> F_AAo_W = F_AC_W.Shift(p_CoAo_W);
           F_BBo_W_array->at(bodyA_node_index) += F_AAo_W;
         }
 
         if (bodyB_index != world_index()) {
           // Spatial force on body B at Bo, expressed in W.
-          const SpatialForce<double> F_BBo_W = -F_AC_W.Shift(p_CoBo_W);
+          const SpatialForce<T> F_BBo_W = -F_AC_W.Shift(p_CoBo_W);
           F_BBo_W_array->at(bodyB_node_index) += F_BBo_W;
         }
       }
@@ -559,11 +1015,103 @@ void MultibodyPlant<double>::CalcAndAddContactForcesByPenaltyMethod(
 }
 
 template<typename T>
-void MultibodyPlant<T>::CalcAndAddContactForcesByPenaltyMethod(
-    const systems::Context<T>&,
-    const PositionKinematicsCache<T>&, const VelocityKinematicsCache<T>&,
-    std::vector<SpatialForce<T>>*) const {
-  DRAKE_ABORT_MSG("Only <double> is supported.");
+void MultibodyPlant<T>::AddJointDampingForces(
+    const systems::Context<T>& context, MultibodyForces<T>* forces) const {
+  DRAKE_DEMAND(forces != nullptr);
+  for (JointIndex joint_index(0); joint_index < num_joints(); ++joint_index) {
+    const Joint<T>& joint = model().get_joint(joint_index);
+    joint.AddInDamping(context, forces);
+  }
+}
+
+template<typename T>
+void MultibodyPlant<T>::AddJointActuationForces(
+    const systems::Context<T>& context, MultibodyForces<T>* forces) const {
+  DRAKE_DEMAND(forces != nullptr);
+  if (num_actuators() > 0) {
+    const VectorX<T> u = AssembleActuationInput(context);
+    for (JointActuatorIndex actuator_index(0);
+         actuator_index < num_actuators(); ++actuator_index) {
+      const JointActuator<T>& actuator =
+          model().get_joint_actuator(actuator_index);
+      // We only support actuators on single dof joints for now.
+      DRAKE_DEMAND(actuator.joint().num_dofs() == 1);
+      for (int joint_dof = 0;
+           joint_dof < actuator.joint().num_dofs(); ++joint_dof) {
+        actuator.AddInOneForce(context, joint_dof, u[actuator_index], forces);
+      }
+    }
+  }
+}
+
+template<typename T>
+void MultibodyPlant<T>::AddJointLimitsPenaltyForces(
+    const systems::Context<T>& context, MultibodyForces<T>* forces) const {
+  DRAKE_THROW_UNLESS(is_discrete());
+  DRAKE_DEMAND(forces != nullptr);
+
+  auto CalcPenaltyForce = [](
+      double lower_limit, double upper_limit, double stiffness, double damping,
+      const T& q, const T& v) {
+    DRAKE_DEMAND(lower_limit <= upper_limit);
+    DRAKE_DEMAND(stiffness >= 0);
+    DRAKE_DEMAND(damping >= 0);
+
+    if (q > upper_limit) {
+      const T delta_q = q - upper_limit;
+      const T limit_force = -stiffness * delta_q - damping * v;
+      using std::min;  // Needed for ADL.
+      return min(limit_force, 0.);
+    } else if (q < lower_limit) {
+      const T delta_q = q - lower_limit;
+      const T limit_force = -stiffness * delta_q - damping * v;
+      using std::max;  // Needed for ADL.
+      return max(limit_force, 0.);
+    }
+    return T(0.0);
+  };
+
+  for (size_t index = 0;
+       index < joint_limits_parameters_.joints_with_limits.size(); ++index) {
+    const JointIndex joint_index =
+        joint_limits_parameters_.joints_with_limits[index];
+    const double lower_limit = joint_limits_parameters_.lower_limit[index];
+    const double upper_limit = joint_limits_parameters_.upper_limit[index];
+    const double stiffness = joint_limits_parameters_.stiffness[index];
+    const double damping = joint_limits_parameters_.damping[index];
+    const Joint<T>& joint = model().get_joint(joint_index);
+
+    const T& q = joint.GetOnePosition(context);
+    const T& v = joint.GetOneVelocity(context);
+
+    const T penalty_force = CalcPenaltyForce(
+        lower_limit, upper_limit, stiffness, damping, q, v);
+
+    joint.AddInOneForce(context, 0, penalty_force, forces);
+  }
+}
+
+template<typename T>
+VectorX<T> MultibodyPlant<T>::AssembleActuationInput(
+    const systems::Context<T>& context) const {
+  // Assemble the vector from the model instance input ports.
+  VectorX<T> actuation_input(num_actuated_dofs());
+  int u_offset = 0;
+  for (ModelInstanceIndex model_instance_index(0);
+       model_instance_index < num_model_instances(); ++model_instance_index) {
+    const int instance_num_dofs =
+        model_->num_actuated_dofs(model_instance_index);
+    if (instance_num_dofs == 0) {
+      continue;
+    }
+    Eigen::VectorBlock<const VectorX<T>> u_instance =
+        this->EvalEigenVectorInput(
+            context, instance_actuation_ports_[model_instance_index]);
+    actuation_input.segment(u_offset, instance_num_dofs) = u_instance;
+    u_offset += instance_num_dofs;
+  }
+  DRAKE_ASSERT(u_offset == num_actuated_dofs());
+  return actuation_input;
 }
 
 template<typename T>
@@ -596,21 +1144,9 @@ void MultibodyPlant<T>::DoCalcTimeDerivatives(
   model_->CalcForceElementsContribution(context, pc, vc, &forces);
 
   // If there is any input actuation, add it to the multibody forces.
-  if (num_actuators() > 0) {
-    Eigen::VectorBlock<const VectorX<T>> u =
-        this->EvalEigenVectorInput(context, actuation_port_);
-    for (JointActuatorIndex actuator_index(0);
-         actuator_index < num_actuators(); ++actuator_index) {
-      const JointActuator<T>& actuator =
-          model().get_joint_actuator(actuator_index);
-      // We only support actuators on single dof joints for now.
-      DRAKE_DEMAND(actuator.joint().num_dofs() == 1);
-      for (int joint_dof = 0;
-           joint_dof < actuator.joint().num_dofs(); ++joint_dof) {
-        actuator.AddInOneForce(context, joint_dof, u[actuator_index], &forces);
-      }
-    }
-  }
+  AddJointActuationForces(context, &forces);
+
+  AddJointDampingForces(context, &forces);
 
   model_->CalcMassMatrixViaInverseDynamics(context, &M);
 
@@ -627,7 +1163,10 @@ void MultibodyPlant<T>::DoCalcTimeDerivatives(
 
   // Compute contact forces on each body by penalty method.
   if (num_collision_geometries() > 0) {
-    CalcAndAddContactForcesByPenaltyMethod(context, pc, vc, &F_BBo_W_array);
+    std::vector<PenetrationAsPointPair<T>> point_pairs =
+        CalcPointPairPenetrations(context);
+    CalcAndAddContactForcesByPenaltyMethod(
+        context, pc, vc, point_pairs, &F_BBo_W_array);
   }
 
   model_->CalcInverseDynamics(
@@ -647,6 +1186,7 @@ void MultibodyPlant<T>::DoCalcTimeDerivatives(
   derivatives->SetFromVector(xdot);
 }
 
+// TODO(amcastro-tri): Consider splitting this method into smaller pieces.
 template<typename T>
 void MultibodyPlant<T>::DoCalcDiscreteVariableUpdates(
     const drake::systems::Context<T>& context0,
@@ -675,7 +1215,6 @@ void MultibodyPlant<T>::DoCalcDiscreteVariableUpdates(
   // Forces at the previous time step.
   MultibodyForces<T> forces0(*model_);
 
-  // Position and velocity kinematics at the previous time step.
   const PositionKinematicsCache<T>& pc0 = EvalPositionKinematics(context0);
   const VelocityKinematicsCache<T>& vc0 = EvalVelocityKinematics(context0);
 
@@ -683,34 +1222,24 @@ void MultibodyPlant<T>::DoCalcDiscreteVariableUpdates(
   model_->CalcForceElementsContribution(context0, pc0, vc0, &forces0);
 
   // If there is any input actuation, add it to the multibody forces.
-  if (num_actuators() > 0) {
-    Eigen::VectorBlock<const VectorX<T>> u =
-        this->EvalEigenVectorInput(context0, actuation_port_);
-    for (JointActuatorIndex actuator_index(0);
-         actuator_index < num_actuators(); ++actuator_index) {
-      const JointActuator<T>& actuator =
-          model().get_joint_actuator(actuator_index);
-      // We only support actuators on single dof joints for now.
-      DRAKE_DEMAND(actuator.joint().num_dofs() == 1);
-      for (int joint_dof = 0;
-           joint_dof < actuator.joint().num_dofs(); ++joint_dof) {
-        actuator.AddInOneForce(
-            context0, joint_dof, u[actuator_index], &forces0);
-      }
-    }
-  }
+  AddJointActuationForces(context0, &forces0);
 
-  // TODO(amcastro-tri): Implement contact handling for the time-stepping MBP.
-  if (num_collision_geometries() > 0) {
-    throw std::runtime_error("Contact not supported in time stepping mode.");
-  }
+  // TODO(amcastro-tri): Update ImplicitStribeckSolver to treat this term
+  // implicitly.
+  AddJointDampingForces(context0, &forces0);
+
+  AddJointLimitsPenaltyForces(context0, &forces0);
+
+  // TODO(amcastro-tri): Eval() point_pairs0 when caching lands.
+  const std::vector<PenetrationAsPointPair<T>> point_pairs0 =
+      CalcPointPairPenetrations(context0);
 
   // Workspace for inverse dynamics:
   // Bodies' accelerations, ordered by BodyNodeIndex.
   std::vector<SpatialAcceleration<T>> A_WB_array(model_->num_bodies());
   // Generalized accelerations.
   VectorX<T> vdot = VectorX<T>::Zero(nv);
-
+  // Body forces (alias to forces0).
   std::vector<SpatialForce<T>>& F_BBo_W_array = forces0.mutable_body_forces();
 
   // With vdot = 0, this computes:
@@ -723,8 +1252,70 @@ void MultibodyPlant<T>::DoCalcDiscreteVariableUpdates(
       &F_BBo_W_array, /* Note: these arrays get overwritten on output. */
       &minus_tau);
 
-  // Velocity at next time step.
-  VectorX<T> v_next = v0 + dt * M0_ldlt.solve(-minus_tau);
+  // Compute discrete update before applying friction forces.
+  // We denote this state x* = [q*, v*], the "star" state.
+  // Generalized momentum "star", before contact forces are applied.
+  VectorX<T> p_star = M0 * v0 - dt * minus_tau;
+
+  // Compute normal and tangential velocity Jacobians at t0.
+  const int num_contacts = point_pairs0.size();
+  MatrixX<T> Jn(num_contacts, nv);
+  MatrixX<T> Jt(2 * num_contacts, nv);
+  // For each contact point pair, the rotation matrix R_WC giving the
+  // orientation of the contact frame C in the world frame W.
+  // TODO(amcastro-tri): cache R_WC_set as soon as caching lands.
+  std::vector<Matrix3<T>> R_WC_set;
+  if (num_contacts > 0) {
+    // TODO(amcastro-tri): when it becomes a bottleneck, update the contact
+    // solver to use operators instead so that we don't have to form these
+    // Jacobian matrices explicitly (an O(num_contacts * nv) operation).
+    Jn = CalcNormalSeparationVelocitiesJacobian(context0, point_pairs0);
+    Jt = CalcTangentVelocitiesJacobian(context0, point_pairs0, &R_WC_set);
+  }
+
+  // Get friction coefficient into a single vector. Dynamic friction is ignored
+  // by the time stepping scheme.
+  std::vector<CoulombFriction<double>> combined_friction_pairs =
+      CalcCombinedFrictionCoefficients(point_pairs0);
+  VectorX<T> mu(num_contacts);
+  std::transform(combined_friction_pairs.begin(), combined_friction_pairs.end(),
+                 mu.data(),
+                 [](const CoulombFriction<double>& coulomb_friction) {
+                   return coulomb_friction.static_friction();
+                 });
+
+  // Place all the penetration depths within a single vector as required by
+  // the solver.
+  VectorX<T> phi0(num_contacts);
+  std::transform(point_pairs0.begin(), point_pairs0.end(),
+                 phi0.data(),
+                 [](const PenetrationAsPointPair<T>& pair) {
+                   return pair.depth;
+                 });
+
+  // TODO(amcastro-tri): Consider using different penalty parameters at each
+  // contact point.
+  // Compliance parameters used by the solver for each contact point.
+  VectorX<T> stiffness = VectorX<T>::Constant(
+      num_contacts, penalty_method_contact_parameters_.stiffness);
+  VectorX<T> damping = VectorX<T>::Constant(
+      num_contacts, penalty_method_contact_parameters_.damping);
+
+  // Update the solver with the new data defining the problem for this update.
+  implicit_stribeck_solver_->SetTwoWayCoupledProblemData(
+      &M0, &Jn, &Jt, &p_star, &phi0, &stiffness, &damping, &mu);
+
+  // Solve for v and the contact forces.
+  implicit_stribeck::ComputationInfo info =
+      implicit_stribeck_solver_->SolveWithGuess(dt, v0);
+  DRAKE_DEMAND(info == implicit_stribeck::Success);
+
+  // TODO(amcastro-tri): implement capability to dump solver statistics to a
+  // file for analysis.
+
+  // Retrieve the solution velocity for the next time step.
+  VectorX<T> v_next = implicit_stribeck_solver_->get_generalized_velocities();
+
   VectorX<T> qdot_next(this->num_positions());
   model_->MapVelocityToQDot(context0, v_next, &qdot_next);
   VectorX<T> q_next = q0 + dt * qdot_next;
@@ -732,6 +1323,11 @@ void MultibodyPlant<T>::DoCalcDiscreteVariableUpdates(
   VectorX<T> x_next(this->num_multibody_states());
   x_next << q_next, v_next;
   updates->get_mutable_vector(0).SetFromVector(x_next);
+
+  // Save contact results for analysis and visualization.
+  // TODO(amcastro-tri): remove next line once caching lands since point_pairs0
+  // and R_WC_set will be cached.
+  CalcContactResults(context0, point_pairs0, R_WC_set, &contact_results_);
 }
 
 template<typename T>
@@ -739,6 +1335,7 @@ void MultibodyPlant<T>::DoMapQDotToVelocity(
     const systems::Context<T>& context,
     const Eigen::Ref<const VectorX<T>>& qdot,
     systems::VectorBase<T>* generalized_velocity) const {
+  if (is_discrete()) return;
   const int nq = model_->num_positions();
   const int nv = model_->num_velocities();
 
@@ -756,6 +1353,7 @@ void MultibodyPlant<T>::DoMapVelocityToQDot(
     const systems::Context<T>& context,
     const Eigen::Ref<const VectorX<T>>& generalized_velocity,
     systems::VectorBase<T>* positions_derivative) const {
+  if (is_discrete()) return;
   const int nq = model_->num_positions();
   const int nv = model_->num_velocities();
 
@@ -783,31 +1381,159 @@ void MultibodyPlant<T>::DeclareStateAndPorts() {
         model_->num_velocities(), 0 /* num_z */);
   }
 
-  if (num_actuators() > 0) {
-    actuation_port_ =
+  // Declare per model instance actuation ports.
+  int num_actuated_instances = 0;
+  ModelInstanceIndex last_actuated_instance;
+  instance_actuation_ports_.resize(num_model_instances());
+  for (ModelInstanceIndex model_instance_index(0);
+       model_instance_index < num_model_instances(); ++model_instance_index) {
+    const int instance_num_dofs =
+        model_->num_actuated_dofs(model_instance_index);
+    if (instance_num_dofs == 0) {
+      continue;
+    }
+    ++num_actuated_instances;
+    last_actuated_instance = model_instance_index;
+    instance_actuation_ports_[model_instance_index] =
         this->DeclareVectorInputPort(
-            systems::BasicVector<T>(num_actuated_dofs())).get_index();
+            systems::BasicVector<T>(instance_num_dofs)).get_index();
   }
 
+  if (num_actuated_instances == 1) {
+    actuated_instance_ = last_actuated_instance;
+  }
+
+  // Declare one output port for the entire state vector.
   continuous_state_output_port_ =
       this->DeclareVectorOutputPort(
           BasicVector<T>(num_multibody_states()),
           &MultibodyPlant::CopyContinuousStateOut).get_index();
+
+  // Declare per model instance state output ports.
+  instance_continuous_state_output_ports_.resize(num_model_instances());
+  for (ModelInstanceIndex model_instance_index(0);
+       model_instance_index < num_model_instances(); ++model_instance_index) {
+    const int instance_num_states =
+        model_->num_states(model_instance_index);
+    if (instance_num_states == 0) {
+      continue;
+    }
+
+    auto calc = [this, model_instance_index](const systems::Context<T>& context,
+                                             systems::BasicVector<T>* result) {
+      this->CopyContinuousStateOut(model_instance_index, context, result);
+    };
+    instance_continuous_state_output_ports_[model_instance_index] =
+        this->DeclareVectorOutputPort(
+            BasicVector<T>(instance_num_states), calc).get_index();
+  }
+
+  // Declare per model instance output port of generalized contact forces.
+  instance_generalized_contact_forces_output_ports_.resize(
+      num_model_instances());
+  for (ModelInstanceIndex model_instance_index(0);
+       model_instance_index < num_model_instances(); ++model_instance_index) {
+    const int instance_num_velocities =
+        model_->num_velocities(model_instance_index);
+    if (instance_num_velocities == 0) {
+      continue;
+    }
+    auto calc = [this, model_instance_index](const systems::Context<T>& context,
+                                             systems::BasicVector<T>* result) {
+      this->CopyGeneralizedContactForcesOut(
+          model_instance_index, context, result);
+    };
+    instance_generalized_contact_forces_output_ports_[model_instance_index] =
+        this->DeclareVectorOutputPort(
+            BasicVector<T>(instance_num_velocities), calc).get_index();
+  }
+
+  // Contact results output port.
+  contact_results_port_ = this->DeclareAbstractOutputPort(
+      ContactResults<T>(),
+      &MultibodyPlant<T>::CalcContactResultsOutput).get_index();
+}
+
+template <typename T>
+const systems::BasicVector<T>& MultibodyPlant<T>::GetStateVector(
+    const Context<T>& context) const {
+  if (is_discrete()) {
+    return context.get_discrete_state(0);
+  } else {
+    return dynamic_cast<const systems::BasicVector<T>&>(
+        context.get_continuous_state_vector());
+  }
 }
 
 template <typename T>
 void MultibodyPlant<T>::CopyContinuousStateOut(
     const Context<T>& context, BasicVector<T>* state_vector) const {
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
-  state_vector->SetFrom(context.get_continuous_state_vector());
+  state_vector->SetFrom(GetStateVector(context));
 }
 
 template <typename T>
-const systems::InputPortDescriptor<T>&
+void MultibodyPlant<T>::CopyContinuousStateOut(
+    ModelInstanceIndex model_instance,
+    const Context<T>& context, BasicVector<T>* state_vector) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+
+  VectorX<T> continuous_state_vector =
+      GetStateVector(context).CopyToVector();
+
+  VectorX<T> instance_state_vector(model_->num_states(model_instance));
+  instance_state_vector.head(num_positions(model_instance)) =
+      model_->get_positions_from_array(
+          model_instance, continuous_state_vector.head(num_positions()));
+  instance_state_vector.tail(num_velocities(model_instance)) =
+      model_->get_velocities_from_array(
+          model_instance, continuous_state_vector.tail(num_velocities()));
+
+  state_vector->set_value(instance_state_vector);
+}
+
+template <typename T>
+void MultibodyPlant<T>::CopyGeneralizedContactForcesOut(
+    ModelInstanceIndex model_instance, const Context<T>&,
+    BasicVector<T>* tau_vector) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(is_discrete());
+
+  // Vector of generalized contact forces for the entire plant's multibody
+  // system.
+  // TODO(amcastro-tri): Contact forces should be computed into a cache entry
+  // and evaluated here. Update this to use caching as soon as the capability
+  // lands.
+  const VectorX<T>& tau_contact =
+      implicit_stribeck_solver_->get_generalized_contact_forces();
+
+  // Generalized velocities and generalized forces are ordered in the same way.
+  // Thus we can call get_velocities_from_array().
+  const VectorX<T> instance_tau_contact =
+      model_->get_velocities_from_array(model_instance, tau_contact);
+
+  tau_vector->set_value(instance_tau_contact);
+}
+
+template <typename T>
+const systems::InputPort<T>&
 MultibodyPlant<T>::get_actuation_input_port() const {
-  DRAKE_THROW_UNLESS(is_finalized());
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
   DRAKE_THROW_UNLESS(num_actuators() > 0);
-  return systems::System<T>::get_input_port(actuation_port_);
+  DRAKE_THROW_UNLESS(actuated_instance_.is_valid());
+  return get_actuation_input_port(actuated_instance_);
+}
+
+template <typename T>
+const systems::InputPort<T>&
+MultibodyPlant<T>::get_actuation_input_port(
+    ModelInstanceIndex model_instance) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(model_instance.is_valid());
+  DRAKE_THROW_UNLESS(model_instance < num_model_instances());
+  DRAKE_THROW_UNLESS(num_actuated_dofs(model_instance) > 0);
+  return systems::System<T>::get_input_port(
+      instance_actuation_ports_.at(model_instance));
 }
 
 template <typename T>
@@ -815,6 +1541,39 @@ const systems::OutputPort<T>&
 MultibodyPlant<T>::get_continuous_state_output_port() const {
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
   return this->get_output_port(continuous_state_output_port_);
+}
+
+template <typename T>
+const systems::OutputPort<T>&
+MultibodyPlant<T>::get_continuous_state_output_port(
+    ModelInstanceIndex model_instance) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(model_instance.is_valid());
+  DRAKE_THROW_UNLESS(model_instance < num_model_instances());
+  DRAKE_THROW_UNLESS(model_->num_states(model_instance) > 0);
+  return this->get_output_port(
+      instance_continuous_state_output_ports_.at(model_instance));
+}
+
+template <typename T>
+const systems::OutputPort<T>&
+MultibodyPlant<T>::get_generalized_contact_forces_output_port(
+    ModelInstanceIndex model_instance) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(is_discrete());
+  DRAKE_THROW_UNLESS(model_instance.is_valid());
+  DRAKE_THROW_UNLESS(model_instance < num_model_instances());
+  DRAKE_THROW_UNLESS(model_->num_states(model_instance) > 0);
+  return this->get_output_port(
+      instance_generalized_contact_forces_output_ports_.at(model_instance));
+}
+
+template <typename T>
+const systems::OutputPort<T>&
+MultibodyPlant<T>::get_contact_results_output_port() const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(is_discrete());
+  return this->get_output_port(contact_results_port_);
 }
 
 template <typename T>
@@ -864,7 +1623,7 @@ const {
 }
 
 template <typename T>
-const systems::InputPortDescriptor<T>&
+const systems::InputPort<T>&
 MultibodyPlant<T>::get_geometry_query_input_port() const {
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
   DRAKE_DEMAND(geometry_source_is_registered());
@@ -872,28 +1631,15 @@ MultibodyPlant<T>::get_geometry_query_input_port() const {
 }
 
 template<typename T>
-void MultibodyPlant<T>::DeclareCacheEntries() {
-  // TODO(amcastro-tri): User proper System::Declare() infrastructure to
-  // declare cache entries when that lands.
-  pc_ = std::make_unique<PositionKinematicsCache<T>>(model_->get_topology());
-  vc_ = std::make_unique<VelocityKinematicsCache<T>>(model_->get_topology());
-}
-
-template<typename T>
 const PositionKinematicsCache<T>& MultibodyPlant<T>::EvalPositionKinematics(
     const systems::Context<T>& context) const {
-  // TODO(amcastro-tri): Replace Calc() for an actual Eval() when caching lands.
-  model_->CalcPositionKinematicsCache(context, pc_.get());
-  return *pc_;
+  return model_->EvalPositionKinematics(context);
 }
 
 template<typename T>
 const VelocityKinematicsCache<T>& MultibodyPlant<T>::EvalVelocityKinematics(
     const systems::Context<T>& context) const {
-  // TODO(amcastro-tri): Replace Calc() for an actual Eval() when caching lands.
-  const PositionKinematicsCache<T>& pc = EvalPositionKinematics(context);
-  model_->CalcVelocityKinematicsCache(context, pc, vc_.get());
-  return *vc_;
+  return model_->EvalVelocityKinematics(context);
 }
 
 template <typename T>
@@ -917,10 +1663,10 @@ void MultibodyPlant<T>::ThrowIfNotFinalized(const char* source_method) const {
 template <typename T>
 T MultibodyPlant<T>::StribeckModel::ComputeFrictionCoefficient(
     const T& speed_BcAc,
-    const CoulombFriction<T>& friction) const {
+    const CoulombFriction<double>& friction) const {
   DRAKE_ASSERT(speed_BcAc >= 0);
-  const T& mu_d = friction.dynamic_friction();
-  const T& mu_s = friction.static_friction();
+  const double mu_d = friction.dynamic_friction();
+  const double mu_s = friction.static_friction();
   const T v = speed_BcAc * inv_v_stiction_tolerance_;
   if (v >= 3) {
     return mu_d;

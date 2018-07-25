@@ -15,7 +15,7 @@
 #include "drake/systems/framework/leaf_context.h"
 #include "drake/systems/framework/leaf_output_port.h"
 #include "drake/systems/framework/output_port.h"
-#include "drake/systems/framework/output_port_value.h"
+#include "drake/systems/framework/system_output.h"
 #include "drake/systems/framework/test_utilities/my_vector.h"
 
 namespace drake {
@@ -23,6 +23,11 @@ namespace systems {
 namespace {
 
 const int kSize = 3;
+
+// Note that Systems in this file are derived directly from drake::System for
+// testing purposes. User Systems should be derived only from LeafSystem which
+// handles much of the bookkeeping you'll see here, and won't need to call
+// methods that are intended only for internal use.
 
 // A shell System to test the default implementations.
 class TestSystem : public System<double> {
@@ -56,23 +61,26 @@ class TestSystem : public System<double> {
   void SetDefaultParameters(const Context<double>& context,
                             Parameters<double>* params) const override {}
 
-  std::unique_ptr<SystemOutput<double>> AllocateOutput(
-      const Context<double>& context) const override {
-    return nullptr;
-  }
-
-  const InputPortDescriptor<double>& AddAbstractInputPort() {
+  const InputPort<double>& AddAbstractInputPort() {
     return this->DeclareAbstractInputPort();
   }
 
   const LeafOutputPort<double>& AddAbstractOutputPort() {
-    // Create an abstract output port with no allocator or calculator.
+    // Create an abstract output port with dummy alloc and calc.
+    const CacheEntry& cache_entry = this->DeclareCacheEntry(
+        "null output port",
+        [] { return Value<int>::Make(0); },
+        [](const ContextBase&, AbstractValue*) {});
+    // TODO(sherm1) Use implicit_cast when available (from abseil). Several
+    // places in this test.
     auto port = std::make_unique<LeafOutputPort<double>>(
-        *this, *this, OutputPortIndex(get_num_output_ports()),
-        typename LeafOutputPort<double>::AllocCallback(nullptr),
-        typename LeafOutputPort<double>::CalcCallback(nullptr));
+        this,  // implicit_cast<const System<T>*>(this)
+        this,  // implicit_cast<const SystemBase*>(this)
+        OutputPortIndex(this->get_num_output_ports()),
+        assign_next_dependency_ticket(),
+        kAbstractValued, 0, &cache_entry);
     LeafOutputPort<double>* const port_ptr = port.get();
-    this->CreateOutputPort(std::move(port));
+    this->AddOutputPort(std::move(port));
     return *port_ptr;
   }
 
@@ -117,12 +125,12 @@ class TestSystem : public System<double> {
 
  protected:
   BasicVector<double>* DoAllocateInputVector(
-      const InputPortDescriptor<double>& descriptor) const override {
+      const InputPort<double>& input_port) const override {
     return nullptr;
   }
 
   AbstractValue* DoAllocateInputAbstract(
-      const InputPortDescriptor<double>& descriptor) const override {
+      const InputPort<double>& input_port) const override {
     return nullptr;
   }
 
@@ -210,11 +218,11 @@ class TestSystem : public System<double> {
   }
 
  private:
-  std::unique_ptr<ContextBase> DoMakeContext() const final {
-    return std::make_unique<LeafContext<double>>();
+  std::unique_ptr<ContextBase> DoAllocateContext() const final {
+    auto context = std::make_unique<LeafContext<double>>();
+    InitializeContextBase(&*context);
+    return context;
   }
-
-  void DoValidateAllocatedContext(const ContextBase&) const final {}
 
   mutable int publish_count_ = 0;
   mutable int update_count_ = 0;
@@ -309,9 +317,9 @@ TEST_F(SystemTest, DiscreteUpdate) {
   EXPECT_EQ(1, system_.get_update_count());
 }
 
-// Tests that descriptor references remain valid even if lots of other
-// descriptors are added to the system, forcing a vector resize.
-TEST_F(SystemTest, PortDescriptorsAreStable) {
+// Tests that port references remain valid even if lots of other ports are added
+// to the system, forcing a vector resize.
+TEST_F(SystemTest, PortReferencesAreStable) {
   const auto& first_input = system_.AddAbstractInputPort();
   const auto& first_output = system_.AddAbstractOutputPort();
   for (int i = 0; i < 1000; i++) {
@@ -413,27 +421,33 @@ class ValueIOTestSystem : public System<T> {
         this->AllocateForcedUnrestrictedUpdateEventCollection());
 
     this->DeclareAbstractInputPort();
-    this->CreateOutputPort(std::make_unique<LeafOutputPort<T>>(
-        *this, *this, OutputPortIndex(this->get_num_output_ports()),
-        []() { return AbstractValue::Make(std::string()); },
-        [this](const Context<T>& context, AbstractValue* output) {
-          this->CalcStringOutput(context, output);
-        }));
-
+    this->AddOutputPort(std::make_unique<LeafOutputPort<T>>(
+        this,  // implicit_cast<const System<T>*>(this)
+        this,  // implicit_cast<const SystemBase*>(this)
+        OutputPortIndex(this->get_num_output_ports()),
+        this->assign_next_dependency_ticket(),
+        kAbstractValued, 0 /* size */,
+        &this->DeclareCacheEntry(
+            "absport",
+            []() { return AbstractValue::Make(std::string()); },
+            [this](const ContextBase& context, AbstractValue* output) {
+              this->CalcStringOutput(context, output);
+            })));
     this->DeclareInputPort(kVectorValued, 1);
-    this->DeclareInputPort(kVectorValued, 1,
-                           RandomDistribution::kUniform);
-    this->DeclareInputPort(kVectorValued, 1,
-                           RandomDistribution::kGaussian);
-    this->CreateOutputPort(std::make_unique<LeafOutputPort<T>>(
-        *this, *this, OutputPortIndex(this->get_num_output_ports()),
-        1,  // Vector size.
-        []() {
-          return std::make_unique<Value<BasicVector<T>>>(1);
-        },
-        [this](const Context<T>& context, BasicVector<T>* output) {
-          this->CalcVectorOutput(context, output);
-        }));
+    this->DeclareInputPort(kVectorValued, 1, RandomDistribution::kUniform);
+    this->DeclareInputPort(kVectorValued, 1, RandomDistribution::kGaussian);
+    this->AddOutputPort(std::make_unique<LeafOutputPort<T>>(
+        this,  // implicit_cast<const System<T>*>(this)
+        this,  // implicit_cast<const SystemBase*>(this)
+        OutputPortIndex(this->get_num_output_ports()),
+        this->assign_next_dependency_ticket(),
+        kVectorValued, 1 /* size */,
+        &this->DeclareCacheEntry(
+            "vecport",
+            []() { return std::make_unique<Value<BasicVector<T>>>(1); },
+            [this](const ContextBase& context, AbstractValue* output) {
+              this->CalcVectorOutput(context, output);
+            })));
 
     this->set_name("ValueIOTestSystem");
   }
@@ -454,28 +468,28 @@ class ValueIOTestSystem : public System<T> {
   }
 
   AbstractValue* DoAllocateInputAbstract(
-      const InputPortDescriptor<T>& descriptor) const override {
+      const InputPort<T>& input_port) const override {
     // Should only get called for the first input.
-    EXPECT_EQ(descriptor.get_index(), 0);
+    EXPECT_EQ(input_port.get_index(), 0);
     return AbstractValue::Make<std::string>("").release();
   }
 
   BasicVector<T>* DoAllocateInputVector(
-      const InputPortDescriptor<T>& descriptor) const override {
+      const InputPort<T>& input_port) const override {
     // Should not get called for the first (abstract) input.
-    EXPECT_GE(descriptor.get_index(), 1);
+    EXPECT_GE(input_port.get_index(), 1);
     return new TestTypedVector<T>();
   }
 
   std::unique_ptr<ContinuousState<T>> AllocateTimeDerivatives() const override {
-    return nullptr;
+    return std::make_unique<ContinuousState<T>>();
   }
 
-  std::unique_ptr<ContextBase> DoMakeContext() const final {
-    return std::make_unique<LeafContext<T>>();
+  std::unique_ptr<ContextBase> DoAllocateContext() const final {
+    auto context = std::make_unique<LeafContext<T>>();
+    this->InitializeContextBase(&*context);
+    return context;
   }
-
-  void DoValidateAllocatedContext(const ContextBase& context) const final {}
 
   std::unique_ptr<CompositeEventCollection<T>>
   AllocateCompositeEventCollection() const override {
@@ -500,7 +514,7 @@ class ValueIOTestSystem : public System<T> {
   }
 
   // Appends "output" to input(0) for output(0).
-  void CalcStringOutput(const Context<T>& context,
+  void CalcStringOutput(const ContextBase& context,
                         AbstractValue* output) const {
     const std::string* str_in =
         this->template EvalInputValue<std::string>(context, 0);
@@ -510,19 +524,12 @@ class ValueIOTestSystem : public System<T> {
   }
 
   // Sets output(1) = 2 * input(1).
-  void CalcVectorOutput(const Context<T>& context,
-                        BasicVector<T>* vec_out) const {
+  void CalcVectorOutput(const ContextBase& context_base,
+                        AbstractValue* output) const {
+    const Context<T>& context = dynamic_cast<const Context<T>&>(context_base);
     const BasicVector<T>* vec_in = this->EvalVectorInput(context, 1);
-    vec_out->get_mutable_value() = 2 * vec_in->get_value();
-  }
-
-  std::unique_ptr<SystemOutput<T>> AllocateOutput(
-      const Context<T>& context) const override {
-    std::unique_ptr<LeafSystemOutput<T>> output(
-        new LeafSystemOutput<T>);
-    output->add_port(this->get_output_port(0).Allocate());
-    output->add_port(this->get_output_port(1).Allocate());
-    return std::move(output);
+    auto& vec_out = output->template GetMutableValue<BasicVector<T>>();
+    vec_out.get_mutable_value() = 2 * vec_in->get_value();
   }
 
   void DispatchPublishHandler(
@@ -651,7 +658,7 @@ TEST_F(SystemInputErrorTest, CheckMessages) {
   EXPECT_NO_THROW(system_.EvalInputValue<BasicVector<double>>(*context_, 1));
   DRAKE_EXPECT_THROWS_MESSAGE_IF_ARMED(
       system_.EvalInputValue<int>(*context_, 1), std::logic_error,
-      ".*EvalInputValue.*expected.*int.*input port.*1.*actual.*BasicVector.*");
+      ".*EvalInputValue.*expected.*int.*input port.*1.*actual.*MyVector.*");
 
   // Now induce errors that only apply to abstract-valued input ports.
 
@@ -679,7 +686,7 @@ class SystemIOTest : public ::testing::Test {
  protected:
   void SetUp() override {
     context_ = test_sys_.CreateDefaultContext();
-    output_ = test_sys_.AllocateOutput(*context_);
+    output_ = test_sys_.AllocateOutput();
 
     // make string input
     context_->FixInputPort(0, Value<std::string>("input"));

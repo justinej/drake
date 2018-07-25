@@ -8,7 +8,7 @@
 #include "drake/manipulation/schunk_wsg/schunk_wsg_constants.h"
 #include "drake/systems/analysis/simulator.h"
 #include "drake/systems/framework/fixed_input_port_value.h"
-#include "drake/systems/framework/output_port_value.h"
+#include "drake/systems/framework/system_output.h"
 
 namespace drake {
 namespace manipulation {
@@ -24,7 +24,7 @@ std::pair<double, double> RunWsgControllerTestStep(
   std::unique_ptr<systems::Context<double>> context =
       dut.CreateDefaultContext();
   std::unique_ptr<systems::SystemOutput<double>> output =
-      dut.AllocateOutput(*context);
+      dut.AllocateOutput();
   context->FixInputPort(
       dut.get_command_input_port().get_index(),
       std::make_unique<systems::Value<lcmt_schunk_wsg_command>>(wsg_command));

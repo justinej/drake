@@ -7,6 +7,7 @@
 #include <tuple>
 #include <utility>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include "drake/automotive/maliput/multilane/arc_road_curve.h"
@@ -17,15 +18,6 @@
 namespace drake {
 namespace maliput {
 namespace multilane {
-
-// Convenience stream operator overload for CubicPolynomial instances.
-// @note MUST be outside the anonymous namespace to be found by the
-// compiler.
-std::ostream& operator<<(std::ostream& o, const CubicPolynomial& p) {
-  return o << p.a() << " + " << p.b() << " p + "
-           << p.c() << " p^2 + " << p.d() << " p^3";
-}
-
 namespace {
 
 // Checks brute force integral computations against known
@@ -99,12 +91,12 @@ TEST_P(RoadCurveAccuracyTest, PathLengthAccuracy) {
           (k_order_s_approximation != 0.0) ?
           (road_curve->CalcSFromP(p, r) - k_order_s_approximation) /
           k_order_s_approximation : road_curve->CalcSFromP(p, r);
-      EXPECT_LE(relative_error, kTolerance)
-          << "Path length estimation with a tolerance of "
-          << road_curve->linear_tolerance() << " m failed"
-          << " at p = " << p << ", r = " << r << "m, h = " << kH
-          << "m with " << road_curve->elevation() << " for elevation and "
-          << road_curve->superelevation() << " for superelevation";
+      EXPECT_LE(relative_error, kTolerance) << fmt::format(
+          "Path length estimation with a tolerance of {} "
+          "m failed at p = {}, r = {}m, h = {}m with "
+          "{} for elevation and {} for superelevation",
+          road_curve->linear_tolerance(), p, r, kH, road_curve->elevation(),
+          road_curve->superelevation());
     }
   }
 }

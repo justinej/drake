@@ -1,10 +1,12 @@
 # -*- python -*-
 
 load("@drake//tools/workspace:mirrors.bzl", "DEFAULT_MIRRORS")
+load("@drake//tools/workspace/bazel_skylib:repository.bzl", "bazel_skylib_repository")  # noqa
 load("@drake//tools/workspace/blas:repository.bzl", "blas_repository")
 load("@drake//tools/workspace/boost:repository.bzl", "boost_repository")
 load("@drake//tools/workspace/buildifier:repository.bzl", "buildifier_repository")  # noqa
 load("@drake//tools/workspace/bullet:repository.bzl", "bullet_repository")
+load("@drake//tools/workspace/cc:repository.bzl", "cc_repository")
 load("@drake//tools/workspace/ccd:repository.bzl", "ccd_repository")
 load("@drake//tools/workspace/com_google_protobuf:repository.bzl", "com_google_protobuf_repository")  # noqa
 load("@drake//tools/workspace/com_jidesoft_jide_oss:repository.bzl", "com_jidesoft_jide_oss_repository")  # noqa
@@ -75,6 +77,8 @@ def add_default_repositories(excludes = [], mirrors = DEFAULT_MIRRORS):
           be useful if a WORKSPACE file has already supplied its own external
           of a given name.
     """
+    if "bazel_skylib" not in excludes:
+        bazel_skylib_repository(name = "bazel_skylib", mirrors = mirrors)
     if "blas" not in excludes:
         blas_repository(name = "blas")
     if "boost" not in excludes:
@@ -83,6 +87,8 @@ def add_default_repositories(excludes = [], mirrors = DEFAULT_MIRRORS):
         buildifier_repository(name = "buildifier", mirrors = mirrors)
     if "bullet" not in excludes:
         bullet_repository(name = "bullet", mirrors = mirrors)
+    if "cc" not in excludes:
+        cc_repository(name = "cc")
     if "ccd" not in excludes:
         ccd_repository(name = "ccd", mirrors = mirrors)
     if "com_google_protobuf" not in excludes:

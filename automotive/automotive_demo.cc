@@ -58,7 +58,7 @@ DEFINE_int32(num_dragway_lanes, 0,
              "only enabled when the user specifies a number of lanes greater "
              "than zero. Only one road network can be enabled. Thus if this "
              "option is enabled, no other road network can be enabled.");
-DEFINE_double(dragway_length, 300, "The length of the dragway.");
+DEFINE_double(dragway_length, 100, "The length of the dragway.");
 DEFINE_double(dragway_lane_width, 3.7, "The dragway lane width.");
 DEFINE_double(dragway_shoulder_width, 3.0, "The dragway's shoulder width.");
 DEFINE_double(dragway_base_speed, 4.0,
@@ -129,7 +129,7 @@ enum class RoadNetworkType {
 };
 
 std::string MakeChannelName(const std::string& name) {
-  std::string default_prefix{"DRIVING_COMMAND"};
+  const std::string default_prefix{"DRIVING_COMMAND"};
   if (name.empty()) {
     return default_prefix;
   }
@@ -285,6 +285,7 @@ void AddSimpleCars(AutomotiveSimulator<double>* simulator) {
       const std::string& channel_name = MakeChannelName(name);
       drake::log()->info("Adding simple car subscribed to {}.", channel_name);
       SimpleCarState<double> state;
+      state.set_acceleration(1.0);
       state.set_y(y_offset);
       simulator->AddPriusSimpleCar(name, channel_name, state);
        y_offset += kSimpleCarYSpacing;

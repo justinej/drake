@@ -81,7 +81,8 @@ class AutomotiveSimulator {
   /// @return The ID of the car that was just added to the simulation.
   int AddPriusSimpleCar(
       const std::string& name, const std::string& channel_name = std::string(),
-      const SimpleCarState<T>& initial_state = SimpleCarState<T>());
+      const SimpleCarState<T>& initial_state = SimpleCarState<T>(),
+      const SimpleCarParams<T>& initial_params = SimpleCarParams<T>());
 
 
   /// Adds a SimpleCar to this simulation controlled by a MOBIL planner coupled
@@ -392,6 +393,10 @@ class AutomotiveSimulator {
   // Holds the desired initial states of each SimpleCar. It is used to
   // initialize the simulation's diagram's state.
   std::map<const SimpleCar<T>*, SimpleCarState<T>> simple_car_initial_states_;
+
+  // Holds the desired initial params of each SimpleCar. Used to possibly
+  // start the car with a fixed acceleration
+  std::map<const SimpleCar<T>*, SimpleCarParams<T>> simple_car_initial_params_;
 
   // Holds the desired initial states of each MaliputRailcar. It is used to
   // initialize the simulation's diagram's state.

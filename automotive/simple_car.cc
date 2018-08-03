@@ -181,12 +181,14 @@ void SimpleCar<T>::ImplCalcTimeDerivatives(const SimpleCarParams<T>& params,
 
   // Compute the smooth acceleration that the vehicle actually executes.
   // TODO(jwnimmer-tri) We should saturate to params.max_acceleration().
-  T desired_acceleration;
-  if (state.acceleration() != 0.0) {
-      desired_acceleration = T(state.acceleration());
-  } else {
-      desired_acceleration = input.acceleration();
-  }
+  // TODO(justinej) why doesn't state.acceleration() work?
+  const T desired_acceleration = input.acceleration();
+  // T desired_acceleration;
+  // if (state.acceleration() != 0.0) {
+  //     desired_acceleration = T(state.acceleration());
+  // } else {
+  //     desired_acceleration = input.acceleration();
+  // }
   const T smooth_acceleration =
       calc_smooth_acceleration(desired_acceleration, params.max_velocity(),
                                params.velocity_limit_kp(), state.velocity());

@@ -20,10 +20,3 @@ element {
     doc: "velocity"
     default_value: "0.0"
 }
-
-element{
-    name: "acceleration"
-    doc: "If not zero, then always use this acceleration value."
-    doc_units: "m/s^2"
-    default_value: "0.0"
-}

@@ -285,8 +285,10 @@ void AddSimpleCars(AutomotiveSimulator<double>* simulator) {
       const std::string& channel_name = MakeChannelName(name);
       drake::log()->info("Adding simple car subscribed to {}.", channel_name);
       SimpleCarState<double> state;
+      SimpleCarParams<double> params;
+      params.set_fixed_acceleration(1.0);
       state.set_y(y_offset);
-      simulator->AddPriusSimpleCar(name, channel_name, state);
+      simulator->AddPriusSimpleCar(name, channel_name, state, params);
        y_offset += kSimpleCarYSpacing;
      }
   }

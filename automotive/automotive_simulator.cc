@@ -115,7 +115,8 @@ template <typename T>
 int AutomotiveSimulator<T>::AddPriusSimpleCar(
     const std::string& name,
     const std::string& channel_name,
-    const SimpleCarState<T>& initial_state) {
+    const SimpleCarState<T>& initial_state,
+    const SimpleCarParams<T>& initial_params) {
   DRAKE_DEMAND(!has_started());
   DRAKE_DEMAND(aggregator_ != nullptr);
   CheckNameUniqueness(name);
@@ -125,6 +126,7 @@ int AutomotiveSimulator<T>::AddPriusSimpleCar(
   simple_car->set_name(name);
   vehicles_[id] = simple_car;
   simple_car_initial_states_[simple_car].set_value(initial_state.get_value());
+  simple_car_initial_params_[simple_car].set_value(initial_params.get_value());
 
   ConnectCarOutputsAndPriusVis(id, simple_car->pose_output(),
       simple_car->velocity_output());
@@ -673,6 +675,15 @@ void AutomotiveSimulator<T>::InitializeSimpleCars() {
         .get_mutable_continuous_state_vector();
     SimpleCarState<T>* const state =
         dynamic_cast<SimpleCarState<T>*>(&context_state);
+
+    // set acceleration to be constant
+    T fixed_acceleration = simple_car_initial_params_[car].fixed_acceleration();
+    systems::Context<T>& context_ = diagram_->GetMutableSubsystemContext(
+         *car, &simulator_->get_mutable_context());
+    auto value = std::make_unique<DrivingCommand<double>>();
+    value->set_acceleration(fixed_acceleration);
+    context_.FixInputPort(0, std::move(value));
+
     DRAKE_ASSERT(state);
     state->set_value(initial_state.get_value());
   }

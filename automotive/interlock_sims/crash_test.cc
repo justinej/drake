@@ -113,12 +113,13 @@ int AddSimpleCar(AutomotiveSimulator<double>* simulator,
                   const double velocity,
                   const double acceleration) {
   SimpleCarState<double> initial_state_car1;
+  SimpleCarParams<double> initial_params_car1;
   initial_state_car1.set_x(distance);
   initial_state_car1.set_y(0);
   initial_state_car1.set_velocity(velocity);
-  initial_state_car1.set_acceleration(acceleration);
+  initial_params_car1.set_fixed_acceleration(acceleration);
   const int car1_id = simulator->AddPriusSimpleCar(
-      "SimpleCar", "SimpleCarChannel", initial_state_car1);
+      "SimpleCar", "SimpleCarChannel", initial_state_car1, initial_params_car1);
   return car1_id;
 }
 

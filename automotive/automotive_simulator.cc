@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "drake/automotive/bh_checker.h"
 #include "drake/automotive/driving_command_mux.h"
 #include "drake/automotive/bh_checker.h"
 #include "drake/automotive/gen/driving_command.h"

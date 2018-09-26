@@ -241,7 +241,7 @@ class AutomotiveSimulator {
       const std::string& name, const LaneDirection& initial_lane_direction,
       ScanStrategy path_or_branches,
       RoadPositionStrategy road_position_strategy, double period_sec,
-      const MaliputRailcarParams<T>& params = MaliputRailcarParams<T>(),
+      const MaliputRailcarParams<T>& params = MaliputRailcarParams<double>(),
       const MaliputRailcarState<T>& initial_state = MaliputRailcarState<T>());
 
   /// Sets the acceleration command of a particular MaliputRailcar.

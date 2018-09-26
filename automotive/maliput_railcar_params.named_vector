@@ -25,9 +25,37 @@ element {
     default_value: "10.0"
 }
 element {
+    name: "max_acceleration"
+    doc: "Maximum acceleration the vehicle is able to do."
+    doc_units: "m/s^2"
+    default_value: "10.0"
+    min_value: "0.0"
+}
+element {
     name: "max_deacceleration"
     doc: "The maximum deacceleration that the vehicle is able to do; this element must be positive."
     doc_units: "m/s^2"
     default_value: "10.0"
+    min_value: "0.0"
+}
+element {
+    name: "t_p"
+    doc: "The period delay between iterations of the Interlock."
+    doc_units: "s"
+    default_value: "0.0001"
+    min_value: "0.0"
+}
+element {
+    name: "t_s"
+    doc: "Delay in Lidar sensor."
+    doc_units: "s"
+    default_value: "0.001"
+    min_value: "0.0"
+}
+element {
+    name: "t_c"
+    doc: "Delay before command reaches actuators."
+    doc_units: "s"
+    default_value: "0.005"
     min_value: "0.0"
 }

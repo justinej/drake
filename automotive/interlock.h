@@ -7,6 +7,7 @@
 
 #include "drake/automotive/maliput/api/lane_data.h"
 #include "drake/automotive/maliput/api/road_geometry.h"
+#include "drake/automotive/gen/maliput_railcar_params.h"
 #include "drake/automotive/pose_selector.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/systems/framework/leaf_system.h"
@@ -64,8 +65,13 @@ class Interlock : public systems::LeafSystem<T> {
             ScanStrategy path_or_branches,
             RoadPositionStrategy road_position_strategy,
             double period_sec,
+            const double max_acceleration,
             const double max_deacceleration,
-            const double max_speed);
+            const double max_speed,
+            const double t_p,
+            const double t_c,
+            const double t_s
+           );
 
   /// Scalar-converting copy constructor.  See @ref system_scalar_conversion.
   template <typename U>
@@ -73,8 +79,13 @@ class Interlock : public systems::LeafSystem<T> {
       : Interlock<T>(other.road_, other.path_or_branches_,
                          other.road_position_strategy_,
                          other.period_sec_,
+                         other.max_acceleration_,
                          other.max_deacceleration_,
-                         other.max_speed_) {}
+                         other.max_speed_,
+                         other.t_p_,
+                         other.t_c_,
+                         other.t_s_
+                    ) {}
 
   ~Interlock() override;
 
@@ -107,8 +118,12 @@ class Interlock : public systems::LeafSystem<T> {
   const ScanStrategy path_or_branches_{};
   const RoadPositionStrategy road_position_strategy_{};
   const double period_sec_{};
+  const double max_acceleration_{};
   const double max_deacceleration_{};
   const double max_speed_{};
+  const double t_p_{};
+  const double t_c_{};
+  const double t_s_{};
 
   // Indices for the input / output ports.
   const int ego_pose_index_{};

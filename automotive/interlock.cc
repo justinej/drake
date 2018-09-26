@@ -26,24 +26,30 @@ using systems::rendering::PoseVector;
 // A very large distance to make sure we can always detect a potential danger ahead.
 const double kScanAheadDistance = 300.0;
 
-// A minimum buffer distance required to avoid a crash.
-const double kReactionDistance = 1.0;
-
 template <typename T>
 Interlock<T>::Interlock(const RoadGeometry& road,
                         ScanStrategy path_or_branches,
                         RoadPositionStrategy road_position_strategy,
                         double period_sec,
+                        const double max_acceleration,
                         const double max_deacceleration,
-                        const double max_speed)
+                        const double max_speed,
+                        const double t_p,
+                        const double t_c,
+                        const double t_s
+                       )
     : systems::LeafSystem<T>(
           systems::SystemTypeTag<automotive::Interlock>{}),
       road_(road),
       path_or_branches_(path_or_branches),
       road_position_strategy_(road_position_strategy),
       period_sec_(period_sec),
+      max_acceleration_(max_acceleration),
       max_deacceleration_(max_deacceleration),
       max_speed_(max_speed),
+      t_p_(t_p),
+      t_c_(t_c),
+      t_s_(t_s),
       ego_pose_index_(
           this->DeclareVectorInputPort(PoseVector<T>()).get_index()),
       ego_velocity_index_(
@@ -89,16 +95,13 @@ const systems::OutputPort<T>& Interlock<T>::bh_bit_output() const {
   return systems::System<T>::get_output_port(bh_bit_index_);
 }
 
-// Returns the max deacceleration of the car
 template <typename T>
 void Interlock<T>::CalcAcceleration(const systems::Context<T>& context,
                       systems::BasicVector<T>* accel_output) const {
     (*accel_output)[0] = -max_deacceleration_;
 }
 
-// Returns 0.0 if there is no black hole (so we should read the controller's
-// acceleration) or 1.0 if we are in the black hole (so we should read
-// Interlock's acceleration)
+// Returns 1 to trigger Interlock, 0 to not trigger
 template <typename T>
 void Interlock<T>::CalcBhBit(const systems::Context<T>& context,
                       systems::BasicVector<T>* bh_bit_output) const {
@@ -158,23 +161,29 @@ void Interlock<T>::ImplCalcBhBit(
                                        T(ego_position.pos.h()));
   const T s_dot_ego = PoseSelector<T>::GetSigmaVelocity(
       {ego_position.lane, lane_position, ego_velocity});
-  const T s_dot_lead =
-      (abs(lead_car_pose.odometry.pos.s()) ==
-       std::numeric_limits<T>::infinity())
-          ? T(0.)
-          : PoseSelector<T>::GetSigmaVelocity(lead_car_pose.odometry);
+
+  // const T s_dot_lead =
+  //     (abs(lead_car_pose.odometry.pos.s()) ==
+  //      std::numeric_limits<T>::infinity())
+  //         ? T(0.)
+  //         : PoseSelector<T>::GetSigmaVelocity(lead_car_pose.odometry);
 
   // Calculate velocity of the ego car relative to the closest car ahead.
-  const T closing_velocity = s_dot_ego - s_dot_lead;
+  // const T closing_velocity = s_dot_ego - s_dot_lead;
 
+  const T max_accel = T(max_acceleration_);
+  const T t_p = T(t_p_);
+  const T t_c = T(t_c_);
+  const T t_s = T(t_s_);
+  const T total_delay = t_p + t_s + t_c;
+  const T minimum_braking_dist = s_dot_ego + max_accel * t_p + max_accel*(t_p + t_s + t_c);
+  // See slides for derivation
+  const T dist_stop = max_accel * (t_p*t_p + total_delay*total_delay )/2 +
+                      (s_dot_ego + max_accel * t_p) * (2*t_p + t_s + t_c) +
+                      minimum_braking_dist*minimum_braking_dist / (2*max_deacceleration_);
 
-  // Reference: https://arachnoid.com/lutusp/auto.html
-  const T time_needed_to_stop = 2.2 * closing_velocity + 
-                               (closing_velocity * closing_velocity) / (2 * T(max_deacceleration_));
-
-  // Compute the output from the interlock function.
-  // 1 if there is a black hole, 0 if safe
-  if (time_needed_to_stop > (headway_distance - kReactionDistance - T(5.0 /*length of the car */))) {
+  // Compute the output from the interlock function: 1 to trigger Interlock, 0 if safe
+  if (headway_distance - T(5.0 /* length of car */) < dist_stop) {
     (*bh_output)[0] = 1;
   } else {
     (*bh_output)[0] = 0;
